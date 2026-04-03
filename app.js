@@ -12,7 +12,7 @@
       {
         role: "assistant",
         content:
-          "I’m ready. Each turn is fanned out across parallel GPT branches, then reassembled into one final answer."
+          "I’m ready. Each turn is steered by a manager GPT, delegated to worker subagents, then reassembled into one final answer."
       }
     ],
     isSending: false
@@ -55,6 +55,54 @@
     return parts.join(" · ");
   }
 
+  function formatManagerMeta(manager) {
+    if (!manager || typeof manager !== "object") {
+      return "";
+    }
+
+    const parts = [];
+    if (manager.name) {
+      parts.push(manager.name);
+    }
+    if (manager.model) {
+      parts.push(manager.model);
+    }
+    if (manager.reasoningEffort) {
+      parts.push(manager.reasoningEffort);
+    }
+    if (manager.strategy) {
+      parts.push(manager.strategy);
+    }
+
+    return parts.join(" · ");
+  }
+
+  function createManagerStrip(manager) {
+    const strip = document.createElement("section");
+    strip.className = "manager-strip";
+
+    const header = document.createElement("div");
+    header.className = "manager-strip-header";
+
+    const title = document.createElement("span");
+    title.className = "manager-strip-title";
+    title.textContent = "Manager brief";
+
+    const meta = document.createElement("span");
+    meta.className = "manager-strip-meta";
+    meta.textContent = formatManagerMeta(manager);
+
+    header.append(title, meta);
+    strip.appendChild(header);
+
+    const brief = document.createElement("div");
+    brief.className = "manager-strip-brief";
+    brief.textContent = typeof manager?.brief === "string" ? manager.brief : "";
+    strip.appendChild(brief);
+
+    return strip;
+  }
+
   function createBranchCard(branch, index) {
     const card = document.createElement("article");
     card.className = "branch-card";
@@ -87,6 +135,19 @@
       card.appendChild(createTextBlock("branch-role", branch.role));
     }
 
+    if (branch?.task) {
+      card.appendChild(createTextBlock("branch-task", branch.task));
+    }
+
+    if (Array.isArray(branch?.subagents) && branch.subagents.length > 0) {
+      card.appendChild(
+        createTextBlock(
+          "branch-subagents",
+          `Subagents: ${branch.subagents.map((subagent) => subagent.name).join(", ")}`
+        )
+      );
+    }
+
     card.appendChild(
       createTextBlock("branch-output", typeof branch?.output === "string" ? branch.output : "")
     );
@@ -100,32 +161,45 @@
 
     body.appendChild(createTextBlock("message-reply", message.content));
 
-    if (Array.isArray(message.branches) && message.branches.length > 0) {
-      const panel = document.createElement("section");
+    if (
+      (message.manager && typeof message.manager === "object") ||
+      (Array.isArray(message.branches) && message.branches.length > 0)
+    ) {
+      const panel = document.createElement("details");
       panel.className = "branch-panel";
+      panel.open = true;
 
-      const panelHeader = document.createElement("div");
-      panelHeader.className = "branch-panel-header";
+      const summary = document.createElement("summary");
+      summary.className = "branch-panel-summary";
 
       const title = document.createElement("span");
       title.className = "branch-panel-title";
-      title.textContent = `Parallel branches (${message.branches.length})`;
+      title.textContent = Array.isArray(message.branches)
+        ? `Parallel branches (${message.branches.length})`
+        : "Parallel branches";
 
       const assembly = document.createElement("span");
       assembly.className = "branch-panel-assembly";
       assembly.textContent = formatAssemblyMeta(message.assembly);
 
-      panelHeader.append(title, assembly);
-      panel.appendChild(panelHeader);
+      summary.append(title, assembly);
+      panel.appendChild(summary);
 
-      const grid = document.createElement("div");
-      grid.className = "branch-grid";
+      if (message.manager && typeof message.manager === "object") {
+        panel.appendChild(createManagerStrip(message.manager));
+      }
 
-      message.branches.forEach((branch, index) => {
-        grid.appendChild(createBranchCard(branch, index));
-      });
+      if (Array.isArray(message.branches) && message.branches.length > 0) {
+        const grid = document.createElement("div");
+        grid.className = "branch-grid";
 
-      panel.appendChild(grid);
+        message.branches.forEach((branch, index) => {
+          grid.appendChild(createBranchCard(branch, index));
+        });
+
+        panel.appendChild(grid);
+      }
+
       body.appendChild(panel);
     }
 
@@ -217,9 +291,11 @@
     updateComposerState();
 
     addMessage("user", trimmed);
-    const loadingMessage = addMessage("assistant", "Running parallel GPT branches", {
-      loading: true
-    });
+    const loadingMessage = addMessage(
+      "assistant",
+      "Manager GPT is briefing worker subagents",
+      { loading: true }
+    );
 
     promptEl.value = "";
     promptEl.style.height = "auto";
@@ -249,6 +325,7 @@
       replaceMessage(loadingMessage.id, {
         content: data.reply,
         loading: false,
+        manager: data.manager && typeof data.manager === "object" ? data.manager : null,
         branches: Array.isArray(data.branches) ? data.branches : [],
         assembly: data.assembly && typeof data.assembly === "object" ? data.assembly : null
       });
@@ -294,7 +371,7 @@
         id: `assistant-${Date.now()}`,
         role: "assistant",
         content:
-          "Conversation cleared. Send a new prompt and I’ll start a fresh parallel branch run."
+          "Conversation cleared. Send a new prompt and I’ll start a fresh manager-led subagent run."
       }
     ];
     renderMessages();
