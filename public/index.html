@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Curiosity Chat</title>
+    <meta
+      name="description"
+      content="A focused browser chat connected to a local GPT-5.4 xhigh backend."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="backdrop backdrop-one"></div>
+    <div class="backdrop backdrop-two"></div>
+
+    <main class="shell">
+      <section class="hero card">
+        <div class="eyebrow">Curiosity Institute</div>
+        <h1>Chat with GPT-5.4 xhigh</h1>
+        <p>
+          A lean browser interface for a local chat backend. Keep the conversation
+          focused, inspectable, and ready for iterative work.
+        </p>
+        <div class="hero-meta">
+          <span class="pill" id="connection-pill">Connecting to /api/chat</span>
+          <span class="pill subtle">History is sent with every request</span>
+        </div>
+      </section>
+
+      <section class="chat card" aria-label="Chat">
+        <div class="chat-topbar">
+          <div>
+            <div class="chat-title">Conversation</div>
+            <div class="chat-status" id="status" aria-live="polite">Ready</div>
+          </div>
+          <button class="ghost-button" id="clear-button" type="button">Clear</button>
+        </div>
+
+        <div class="messages" id="messages" aria-live="polite" aria-relevant="additions text"></div>
+
+        <form class="composer" id="composer">
+          <label class="sr-only" for="prompt">Message</label>
+          <textarea
+            id="prompt"
+            name="prompt"
+            rows="1"
+            placeholder="Ask something, outline a task, or continue the thread..."
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+          <button id="send-button" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
