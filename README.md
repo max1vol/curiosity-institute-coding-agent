@@ -21,6 +21,7 @@ npm start
 - `server.js` loads `.env` automatically, so you do not need extra tooling to inject env vars.
 - The browser never sees your OpenAI API key. Requests go through `server.js`.
 - Chat requests use the Responses API with `model: "gpt-5.4"` and `reasoning.effort: "xhigh"`.
+- OpenAI web search is enabled through the Responses API `tools` array, so the manager, workers, and final answer can search the web when the model decides it is useful.
 - `Manager GPT` steers the run, assigning work to `Mapper GPT`, `Solver GPT`, and `Skeptic GPT`.
 - Each worker lead runs its own subagents before producing its branch output for the final assembly step.
 - Vercel uses the serverless entrypoint in `api/chat.js` and the root static files `index.html`, `app.js`, and `styles.css`.
