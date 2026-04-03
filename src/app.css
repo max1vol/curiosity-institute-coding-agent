@@ -195,6 +195,12 @@ h1 {
   background: rgba(110, 231, 216, 0.08);
 }
 
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
 .messages {
   flex: 1;
   padding: 1rem 1rem 0;
@@ -416,6 +422,101 @@ h1 {
   overflow: hidden;
 }
 
+.gate {
+  flex: 1;
+  display: grid;
+  align-content: center;
+  gap: 1rem;
+  padding: 1.4rem 1.1rem 1.2rem;
+}
+
+.gate-copy {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.gate-kicker {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.gate-heading {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.8rem, 3.3vw, 2.6rem);
+  line-height: 1;
+}
+
+.gate-text {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.gate-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+}
+
+.gate-input {
+  min-height: 3.5rem;
+  padding: 0.95rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.gate-input:focus {
+  border-color: rgba(110, 231, 216, 0.48);
+  box-shadow: 0 0 0 4px rgba(110, 231, 216, 0.14);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.gate-button {
+  border: 0;
+  border-radius: 18px;
+  padding: 0.95rem 1.2rem;
+  background: linear-gradient(180deg, #7cf1de, #55cfc4);
+  color: #062024;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 12px 30px rgba(85, 207, 196, 0.24);
+  transition:
+    transform 160ms ease,
+    filter 160ms ease,
+    opacity 160ms ease;
+}
+
+.gate-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+.gate-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.gate-error {
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 124, 124, 0.3);
+  background: rgba(255, 124, 124, 0.08);
+  color: #ffd6d6;
+  line-height: 1.5;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -550,10 +651,12 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .gate-form,
   .composer {
     grid-template-columns: 1fr;
   }
 
+  .gate-button,
   .composer button {
     width: 100%;
   }
