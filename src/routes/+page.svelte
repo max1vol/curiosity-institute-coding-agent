@@ -3,7 +3,6 @@
   import ChatMessage from "$lib/components/ChatMessage.svelte";
 
   export let data;
-
   const INITIAL_ASSISTANT_MESSAGE =
     "I'm ready. Each turn is steered by a manager GPT, delegated to worker subagents, then reassembled into one final answer.";
   const CLEARED_ASSISTANT_MESSAGE =
@@ -11,27 +10,34 @@
   const LOCKED_ASSISTANT_MESSAGE =
     "Session locked. Verify again to use the chat.";
 
+  let nextMessageId = 1;
   let messages = [createMessage("assistant", INITIAL_ASSISTANT_MESSAGE)];
-  let isVerified = data.verified;
-  let verificationConfigured = data.verificationConfigured;
-  let verificationCode = "";
-  let verificationError = "";
-  let isVerifying = false;
   let isSending = false;
   let prompt = "";
-  let statusText = isVerified ? "Ready" : "Verification required";
-  let statusMode = isVerified ? "idle" : "locked";
-  let connectionPill = isVerified
+  let statusText = data.verified
+    ? "Ready"
+    : data.verificationError
+      ? "Verification failed"
+      : "Verification required";
+  let statusMode = data.verified
+    ? "idle"
+    : data.verificationError
+      ? "error"
+      : "locked";
+  let connectionPill = data.verified
     ? "Verified session active"
-    : verificationConfigured
-      ? "Verification required"
+    : data.verificationConfigured
+      ? data.verificationError
+        ? "Verification failed"
+        : "Verification required"
       : "CHAT_ACCESS_CODE is not configured";
   let promptEl;
+  let verificationInputEl;
   let messagesEl;
 
   function createMessage(role, content, extra = {}) {
     return {
-      id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      id: `${role}-${nextMessageId++}`,
       role,
       content,
       ...extra
@@ -66,87 +72,14 @@
     promptEl?.focus();
   }
 
-  async function verifyAccess(event) {
-    event.preventDefault();
-
-    if (!verificationConfigured || isVerifying || isSending) {
-      return;
-    }
-
-    const trimmed = verificationCode.trim();
-    if (!trimmed) {
-      verificationError = "Enter the access code.";
-      setStatus("Verification required", "locked");
-      return;
-    }
-
-    isVerifying = true;
-    verificationError = "";
-    setStatus("Verifying access", "busy");
-    connectionPill = "Checking verification";
-
-    try {
-      const response = await fetch("/api/verify", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          accessCode: trimmed
-        })
-      });
-
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        verificationError =
-          data && typeof data.error === "string"
-            ? data.error
-            : `Verification failed with status ${response.status}.`;
-        setStatus("Verification failed", "error");
-        connectionPill = "Verification failed";
-        return;
-      }
-
-      isVerified = true;
-      verificationCode = "";
-      setStatus("Ready", "idle");
-      connectionPill = "Verified session active";
-      await focusPrompt();
-    } catch (error) {
-      verificationError =
-        error instanceof Error ? error.message : "Failed to reach the verification endpoint.";
-      setStatus("Verification unavailable", "error");
-      connectionPill = "Verification unavailable";
-    } finally {
-      isVerifying = false;
-    }
-  }
-
-  async function lockSession() {
-    if (isVerifying || isSending) {
-      return;
-    }
-
-    try {
-      await fetch("/api/logout", {
-        method: "POST"
-      });
-    } catch (error) {
-      console.error(error);
-    }
-
-    isVerified = false;
-    verificationError = "";
-    verificationCode = "";
-    messages = [createMessage("assistant", LOCKED_ASSISTANT_MESSAGE)];
-    setStatus("Verification required", "locked");
-    connectionPill = verificationConfigured ? "Verification required" : "Verification unavailable";
+  async function focusVerificationInput() {
+    await tick();
+    verificationInputEl?.focus();
   }
 
   async function sendMessage() {
     const trimmed = prompt.trim();
-    if (!isVerified || !trimmed || isSending) {
+    if (!data.verified || !trimmed || isSending) {
       return;
     }
 
@@ -184,14 +117,8 @@
       if (!response.ok) {
         if (response.status === 401) {
           removeMessage(loadingMessage.id);
-          isVerified = false;
-          verificationError =
-            data && typeof data.error === "string"
-              ? data.error
-              : "Verification required before using the chat.";
-          messages = [createMessage("assistant", LOCKED_ASSISTANT_MESSAGE)];
-          setStatus("Verification required", "locked");
-          connectionPill = "Verification required";
+          window.location.reload();
+          void focusVerificationInput();
           return;
         }
 
@@ -248,7 +175,7 @@
   }
 
   function clearConversation() {
-    if (!isVerified || isSending) {
+    if (!data.verified || isSending) {
       return;
     }
 
@@ -280,10 +207,18 @@
 
   onMount(() => {
     resizePrompt();
-    if (isVerified) {
+    if (data.verified) {
       promptEl?.focus();
+    } else {
+      verificationInputEl?.focus();
     }
   });
+
+  $: if (data.verified) {
+    void focusPrompt();
+  } else if (data.verificationConfigured) {
+    void focusVerificationInput();
+  }
 </script>
 
 <svelte:head>
@@ -309,7 +244,7 @@
     <div class="hero-meta">
       <span class="pill">{connectionPill}</span>
       <span class="pill subtle">
-        {#if isVerified}
+        {#if data.verified}
           Verified session - manager + worker subagents + web search
         {:else}
           Access code required before chat is enabled
@@ -326,18 +261,18 @@
       </div>
 
       <div class="toolbar-actions">
-        {#if isVerified}
+        {#if data.verified}
           <button class="ghost-button" type="button" on:click={clearConversation} disabled={isSending}>
             Clear
           </button>
-          <button class="ghost-button" type="button" on:click={lockSession} disabled={isSending}>
-            Lock
-          </button>
+          <form method="POST" action="/logout">
+            <button class="ghost-button" type="submit" disabled={isSending}>Lock</button>
+          </form>
         {/if}
       </div>
     </div>
 
-    {#if isVerified}
+    {#if data.verified}
       <div class="messages" bind:this={messagesEl} aria-live="polite" aria-relevant="additions text">
         {#each messages as message (message.id)}
           <ChatMessage {message} />
@@ -373,22 +308,20 @@
           </p>
         </div>
 
-        {#if verificationConfigured}
-          <form class="gate-form" on:submit={verifyAccess}>
+        {#if data.verificationConfigured}
+          <form class="gate-form" method="POST" action="/verify">
             <label class="sr-only" for="verification-code">Access code</label>
             <input
               id="verification-code"
               class="gate-input"
               type="password"
-              bind:value={verificationCode}
+              name="accessCode"
+              bind:this={verificationInputEl}
               placeholder="Enter access code"
               autocomplete="current-password"
               spellcheck="false"
-              disabled={isVerifying}
             />
-            <button class="gate-button" type="submit" disabled={isVerifying}>
-              {isVerifying ? "Verifying..." : "Verify"}
-            </button>
+            <button class="gate-button" type="submit">Verify</button>
           </form>
         {:else}
           <div class="gate-error">
@@ -396,8 +329,10 @@
           </div>
         {/if}
 
-        {#if verificationError}
-          <div class="gate-error">{verificationError}</div>
+        {#if data.verificationError === "invalid"}
+          <div class="gate-error">Invalid access code.</div>
+        {:else if data.verificationError === "missing"}
+          <div class="gate-error">CHAT_ACCESS_CODE is not configured on the server yet.</div>
         {/if}
       </div>
     {/if}

@@ -6,7 +6,7 @@ import {
   isAccessCodeConfigured
 } from "$lib/server/access";
 
-export function load({ cookies, setHeaders }) {
+export function load({ cookies, setHeaders, url }) {
   setHeaders(createNoStoreHeaders());
 
   const accessCode = env.CHAT_ACCESS_CODE;
@@ -16,6 +16,7 @@ export function load({ cookies, setHeaders }) {
     hasValidVerificationCookie(cookies.get(VERIFICATION_COOKIE_NAME), accessCode);
 
   return {
+    verificationError: url.searchParams.get("verificationError"),
     verificationConfigured,
     verified
   };
