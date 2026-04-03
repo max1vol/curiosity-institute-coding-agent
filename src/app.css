@@ -23,7 +23,8 @@
 }
 
 html,
-body {
+body,
+#svelte {
   min-height: 100%;
 }
 
@@ -48,6 +49,11 @@ body::before {
     linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), transparent 90%);
+}
+
+button,
+textarea {
+  font: inherit;
 }
 
 .backdrop {
@@ -176,7 +182,6 @@ h1 {
   color: var(--text);
   border-radius: 999px;
   padding: 0.72rem 1rem;
-  font: inherit;
   cursor: pointer;
   transition:
     transform 160ms ease,
@@ -184,7 +189,7 @@ h1 {
     background 160ms ease;
 }
 
-.ghost-button:hover {
+.ghost-button:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: rgba(110, 231, 216, 0.34);
   background: rgba(110, 231, 216, 0.08);
@@ -221,22 +226,6 @@ h1 {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.message-body {
-  display: grid;
-  gap: 0.8rem;
-}
-
-.message-reply {
-  font-size: 1rem;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.message-text {
-  white-space: pre-wrap;
-  line-height: 1.6;
-}
-
 .message.system {
   align-self: center;
   max-width: none;
@@ -265,6 +254,22 @@ h1 {
   overflow: hidden;
   vertical-align: bottom;
   animation: dots 1.1s steps(4, end) infinite;
+}
+
+.message-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.message-reply,
+.message-text {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.message-reply {
+  font-size: 1rem;
+  line-height: 1.7;
 }
 
 .branch-panel {
@@ -429,7 +434,6 @@ h1 {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
-  font: inherit;
   line-height: 1.5;
   outline: none;
   transition:
@@ -455,7 +459,6 @@ h1 {
   padding: 0.95rem 1.2rem;
   background: linear-gradient(180deg, #7cf1de, #55cfc4);
   color: #062024;
-  font: inherit;
   font-weight: 800;
   cursor: pointer;
   box-shadow: 0 12px 30px rgba(85, 207, 196, 0.24);
@@ -470,7 +473,8 @@ h1 {
   filter: brightness(1.02);
 }
 
-.composer button:disabled {
+.composer button:disabled,
+.ghost-button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }

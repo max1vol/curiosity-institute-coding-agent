@@ -1,29 +1,17 @@
-const fsSync = require("node:fs");
-const path = require("node:path");
-
 const OPENAI_API_URL = "https://api.openai.com/v1/responses";
-const MODEL = "gpt-5.4";
-const REASONING_EFFORT = "xhigh";
-const MANAGER_MODEL = "gpt-5.4-mini";
-const MANAGER_REASONING_EFFORT = "medium";
-const WORKER_MODEL = "gpt-5.4-mini";
-const WORKER_REASONING_EFFORT = "medium";
-const MAX_BODY_SIZE = 1_000_000;
-const MAX_MESSAGES = 24;
-const ORCHESTRATION_STRATEGY = "manager-worker-subagents-v3";
-const OPENAI_TIMEOUT_MS = 45000;
-const WEB_SEARCH_TOOLS = [{ type: "web_search" }];
 
-const BASE_ASSISTANT_INSTRUCTIONS =
-  "You are a practical coding assistant for the Curiosity Institute. Be clear, concise, and concrete.";
-
-const MANAGER_AGENT = {
+export const MODEL = "gpt-5.4";
+export const REASONING_EFFORT = "xhigh";
+export const MANAGER_MODEL = "gpt-5.4-mini";
+export const MANAGER_REASONING_EFFORT = "medium";
+export const WORKER_MODEL = "gpt-5.4-mini";
+export const WORKER_REASONING_EFFORT = "medium";
+export const MANAGER_AGENT = {
   key: "manager",
   name: "Manager GPT",
   role: "Steer and brief the worker leads"
 };
-
-const BRANCH_WORKERS = [
+export const BRANCH_WORKERS = [
   {
     key: "mapper",
     name: "Mapper GPT",
@@ -46,8 +34,7 @@ const BRANCH_WORKERS = [
       "Challenge assumptions, identify risks, edge cases, tradeoffs, or failure modes, and surface the caveats that matter most before a final answer is sent."
   }
 ];
-
-const WORKER_SUBAGENTS = [
+export const WORKER_SUBAGENTS = [
   {
     key: "pathfinder",
     name: "Pathfinder Subagent",
@@ -64,87 +51,14 @@ const WORKER_SUBAGENTS = [
   }
 ];
 
-function loadDotEnv(baseDir) {
-  const envPath = path.join(baseDir, ".env");
+const MAX_MESSAGES = 24;
+const OPENAI_TIMEOUT_MS = 45000;
+const ORCHESTRATION_STRATEGY = "manager-worker-subagents-v3";
+const WEB_SEARCH_TOOLS = [{ type: "web_search" }];
+const BASE_ASSISTANT_INSTRUCTIONS =
+  "You are a practical coding assistant for the Curiosity Institute. Be clear, concise, and concrete.";
 
-  if (!fsSync.existsSync(envPath)) {
-    return;
-  }
-
-  const source = fsSync.readFileSync(envPath, "utf8");
-  for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const separatorIndex = line.indexOf("=");
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = line.slice(0, separatorIndex).trim();
-    let value = line.slice(separatorIndex + 1).trim();
-    if (!key || process.env[key] !== undefined) {
-      continue;
-    }
-
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    process.env[key] = value;
-  }
-}
-
-function sendJson(res, statusCode, payload) {
-  const body = JSON.stringify(payload);
-
-  if (typeof res.status === "function" && typeof res.json === "function") {
-    res.status(statusCode).json(payload);
-    return;
-  }
-
-  res.writeHead(statusCode, {
-    "Content-Length": Buffer.byteLength(body),
-    "Content-Type": "application/json; charset=utf-8"
-  });
-  res.end(body);
-}
-
-async function readRequestBody(req) {
-  if (req.body && typeof req.body === "object") {
-    return JSON.stringify(req.body);
-  }
-
-  if (typeof req.body === "string") {
-    return req.body;
-  }
-
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    let body = "";
-
-    req.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY_SIZE) {
-        reject(new Error("Request body too large."));
-        req.destroy();
-        return;
-      }
-
-      body += chunk.toString("utf8");
-    });
-
-    req.on("end", () => resolve(body));
-    req.on("error", reject);
-  });
-}
-
-function normalizeMessages(value) {
+export function normalizeMessages(value) {
   if (!Array.isArray(value)) {
     throw new Error("Expected `messages` to be an array.");
   }
@@ -155,12 +69,10 @@ function normalizeMessages(value) {
       role: message.role,
       content: typeof message.content === "string" ? message.content.trim() : ""
     }))
-    .filter((message) => {
-      return (
-        (message.role === "user" || message.role === "assistant") &&
-        message.content.length > 0
-      );
-    })
+    .filter(
+      (message) =>
+        (message.role === "user" || message.role === "assistant") && message.content.length > 0
+    )
     .slice(-MAX_MESSAGES);
 
   if (normalized.length === 0) {
@@ -238,14 +150,9 @@ function extractJsonObject(text) {
   }
 }
 
-async function callOpenAiTextWithProfile(
-  openAiApiKey,
-  model,
-  reasoningEffort,
-  instructions,
-  messages
-) {
+async function callOpenAiTextWithProfile(openAiApiKey, model, reasoningEffort, instructions, messages) {
   let upstream;
+
   try {
     upstream = await fetch(OPENAI_API_URL, {
       method: "POST",
@@ -407,7 +314,7 @@ function createManagerInstructions() {
     "{",
     '  "summary": "short steering summary",',
     '  "workers": [',
-    '    {',
+    "    {",
     '      "key": "mapper",',
     '      "objective": "what this worker should optimize for",',
     '      "task": "specific brief from the manager",',
@@ -448,7 +355,7 @@ function formatManagerAssignment(assignment) {
   ].join("\n");
 }
 
-function createWorkerLeadInstructions(worker, assignment, managerPlan, subagents) {
+function createWorkerLeadInstructions(worker, assignment, managerPlan) {
   return [
     BASE_ASSISTANT_INSTRUCTIONS,
     `You are ${worker.name}.`,
@@ -464,7 +371,7 @@ function createWorkerLeadInstructions(worker, assignment, managerPlan, subagents
     "Return JSON only with this exact shape:",
     "{",
     '  "subagents": [',
-    '    {',
+    "    {",
     '      "key": "pathfinder",',
     '      "name": "Pathfinder Subagent",',
     '      "role": "Push toward the strongest useful angle",',
@@ -543,16 +450,16 @@ async function requestBranchReply(openAiApiKey, messages, worker, assignment, ma
 
 function formatBranchOutputs(branches) {
   return branches
-    .map((branch, index) => {
-      return [
+    .map((branch, index) =>
+      [
         `Worker ${index + 1}: ${branch.name}`,
         `Role: ${branch.role}`,
         `Task: ${branch.task}`,
         `Priority: ${branch.priority}`,
         `Status: ${branch.status}`,
         branch.output
-      ].join("\n");
-    })
+      ].join("\n")
+    )
     .join("\n\n");
 }
 
@@ -569,9 +476,7 @@ function createAssemblyInstructions(managerPlan, branches) {
   ].join("\n\n");
 }
 
-async function requestReply(messages) {
-  const openAiApiKey = process.env.OPENAI_API_KEY;
-
+export async function requestReply(openAiApiKey, messages) {
   if (!openAiApiKey) {
     return {
       ok: false,
@@ -597,6 +502,7 @@ async function requestReply(messages) {
 
     const worker = BRANCH_WORKERS[index];
     const assignment = managerPlan.workers[index];
+
     return {
       key: worker.key,
       name: worker.name,
@@ -618,6 +524,12 @@ async function requestReply(messages) {
     (branch) => branch.status === "completed" || branch.status === "partial"
   );
 
+  const assembly = {
+    model: MODEL,
+    reasoningEffort: REASONING_EFFORT,
+    strategy: ORCHESTRATION_STRATEGY
+  };
+
   if (usableBranches.length === 0) {
     return {
       ok: false,
@@ -626,11 +538,7 @@ async function requestReply(messages) {
         error: "All manager-directed worker branches failed.",
         manager: managerPlan,
         branches,
-        assembly: {
-          model: MODEL,
-          reasoningEffort: REASONING_EFFORT,
-          strategy: ORCHESTRATION_STRATEGY
-        }
+        assembly
       }
     };
   }
@@ -649,11 +557,7 @@ async function requestReply(messages) {
         error: assemblyResult.payload.error,
         manager: managerPlan,
         branches,
-        assembly: {
-          model: MODEL,
-          reasoningEffort: REASONING_EFFORT,
-          strategy: ORCHESTRATION_STRATEGY
-        }
+        assembly
       }
     };
   }
@@ -667,48 +571,7 @@ async function requestReply(messages) {
       reasoningEffort: REASONING_EFFORT,
       manager: managerPlan,
       branches,
-      assembly: {
-        model: MODEL,
-        reasoningEffort: REASONING_EFFORT,
-        strategy: ORCHESTRATION_STRATEGY
-      }
+      assembly
     }
   };
 }
-
-async function handleChatRequest(req, res) {
-  if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Method not allowed." });
-    return;
-  }
-
-  let parsed;
-  try {
-    const body = await readRequestBody(req);
-    parsed = body ? JSON.parse(body) : {};
-  } catch {
-    sendJson(res, 400, { error: "Invalid JSON request body." });
-    return;
-  }
-
-  let messages;
-  try {
-    messages = normalizeMessages(parsed.messages);
-  } catch (error) {
-    sendJson(res, 400, { error: error.message });
-    return;
-  }
-
-  const result = await requestReply(messages);
-  sendJson(res, result.status, result.payload);
-}
-
-module.exports = {
-  MANAGER_AGENT,
-  BRANCH_WORKERS,
-  WORKER_SUBAGENTS,
-  MODEL,
-  REASONING_EFFORT,
-  handleChatRequest,
-  loadDotEnv
-};
