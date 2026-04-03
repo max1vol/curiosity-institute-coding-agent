@@ -12,7 +12,7 @@
       {
         role: "assistant",
         content:
-          "I’m ready. Send a message and I’ll keep the full conversation history in the request payload."
+          "I’m ready. Each turn is fanned out across parallel GPT branches, then reassembled into one final answer."
       }
     ],
     isSending: false
@@ -27,13 +27,109 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  function escapeHtml(value) {
-    return value
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
+  function createTextBlock(className, text) {
+    const element = document.createElement("div");
+    if (className) {
+      element.className = className;
+    }
+    element.textContent = text;
+    return element;
+  }
+
+  function formatAssemblyMeta(assembly) {
+    if (!assembly || typeof assembly !== "object") {
+      return "";
+    }
+
+    const parts = [];
+    if (assembly.model) {
+      parts.push(assembly.model);
+    }
+    if (assembly.reasoningEffort) {
+      parts.push(assembly.reasoningEffort);
+    }
+    if (assembly.strategy) {
+      parts.push(assembly.strategy);
+    }
+
+    return parts.join(" · ");
+  }
+
+  function createBranchCard(branch, index) {
+    const card = document.createElement("article");
+    card.className = "branch-card";
+
+    const header = document.createElement("div");
+    header.className = "branch-card-header";
+
+    const identity = document.createElement("div");
+    identity.className = "branch-card-identity";
+
+    const key = document.createElement("span");
+    key.className = "branch-key";
+    key.textContent = branch?.key || `branch-${index + 1}`;
+
+    const name = document.createElement("span");
+    name.className = "branch-name";
+    name.textContent = branch?.name || `Branch ${index + 1}`;
+
+    identity.append(key, name);
+
+    const meta = document.createElement("span");
+    meta.className = "branch-meta";
+    meta.textContent = [branch?.model, branch?.reasoningEffort].filter(Boolean).join(" · ");
+
+    header.append(identity, meta);
+
+    card.appendChild(header);
+
+    if (branch?.role) {
+      card.appendChild(createTextBlock("branch-role", branch.role));
+    }
+
+    card.appendChild(
+      createTextBlock("branch-output", typeof branch?.output === "string" ? branch.output : "")
+    );
+
+    return card;
+  }
+
+  function createAssistantBody(message) {
+    const body = document.createElement("div");
+    body.className = "message-body";
+
+    body.appendChild(createTextBlock("message-reply", message.content));
+
+    if (Array.isArray(message.branches) && message.branches.length > 0) {
+      const panel = document.createElement("section");
+      panel.className = "branch-panel";
+
+      const panelHeader = document.createElement("div");
+      panelHeader.className = "branch-panel-header";
+
+      const title = document.createElement("span");
+      title.className = "branch-panel-title";
+      title.textContent = `Parallel branches (${message.branches.length})`;
+
+      const assembly = document.createElement("span");
+      assembly.className = "branch-panel-assembly";
+      assembly.textContent = formatAssemblyMeta(message.assembly);
+
+      panelHeader.append(title, assembly);
+      panel.appendChild(panelHeader);
+
+      const grid = document.createElement("div");
+      grid.className = "branch-grid";
+
+      message.branches.forEach((branch, index) => {
+        grid.appendChild(createBranchCard(branch, index));
+      });
+
+      panel.appendChild(grid);
+      body.appendChild(panel);
+    }
+
+    return body;
   }
 
   function createMessageElement(message) {
@@ -43,7 +139,13 @@
     if (message.id) {
       el.dataset.id = message.id;
     }
-    el.innerHTML = escapeHtml(message.content);
+
+    if (message.role === "assistant") {
+      el.appendChild(createAssistantBody(message));
+      return el;
+    }
+
+    el.appendChild(createTextBlock("message-text", message.content));
     return el;
   }
 
@@ -115,7 +217,9 @@
     updateComposerState();
 
     addMessage("user", trimmed);
-    const loadingMessage = addMessage("assistant", "Thinking", { loading: true });
+    const loadingMessage = addMessage("assistant", "Running parallel GPT branches", {
+      loading: true
+    });
 
     promptEl.value = "";
     promptEl.style.height = "auto";
@@ -144,7 +248,9 @@
 
       replaceMessage(loadingMessage.id, {
         content: data.reply,
-        loading: false
+        loading: false,
+        branches: Array.isArray(data.branches) ? data.branches : [],
+        assembly: data.assembly && typeof data.assembly === "object" ? data.assembly : null
       });
 
       setStatus("Ready", "idle");
@@ -187,7 +293,8 @@
       {
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content: "Conversation cleared. Send a new prompt and I’ll start from scratch."
+        content:
+          "Conversation cleared. Send a new prompt and I’ll start a fresh parallel branch run."
       }
     ];
     renderMessages();
