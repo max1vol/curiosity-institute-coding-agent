@@ -19,4 +19,5 @@ npm start
 - `server.js` loads `.env` automatically, so you do not need extra tooling to inject env vars.
 - The browser never sees your OpenAI API key. Requests go through `server.js`.
 - Chat requests use the Responses API with `model: "gpt-5.4"` and `reasoning.effort: "xhigh"`.
-- Vercel can use the serverless entrypoint in `api/chat.js` while still serving the static files from `public/`.
+- Vercel uses the serverless entrypoint in `api/chat.js` and the root static files `index.html`, `app.js`, and `styles.css`.
+- Set `OPENAI_API_KEY` in the Vercel project environment before expecting production chat requests to work.

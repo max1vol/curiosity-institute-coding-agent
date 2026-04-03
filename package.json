@@ -4,6 +4,7 @@
   "private": true,
   "description": "Minimal GPT-5.4 xhigh chat app for the Curiosity Institute.",
   "scripts": {
+    "dev": "node server.js",
     "start": "node server.js"
   },
   "engines": {

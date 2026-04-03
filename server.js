@@ -7,7 +7,11 @@ loadDotEnv(__dirname);
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
-const publicDir = path.join(__dirname, "public");
+const STATIC_FILES = new Map([
+  ["/", "index.html"],
+  ["/app.js", "app.js"],
+  ["/styles.css", "styles.css"]
+]);
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -27,25 +31,18 @@ function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-
 }
 
 async function serveStaticFile(reqPath, res) {
-  const requestedPath = reqPath === "/" ? "/index.html" : reqPath;
-  const safePath = path.normalize(requestedPath).replace(/^(\.\.[/\\])+/, "");
-  const filePath = path.join(publicDir, safePath);
-
-  if (!filePath.startsWith(publicDir)) {
-    sendText(res, 403, "Forbidden");
+  const fileName = STATIC_FILES.get(reqPath);
+  if (!fileName) {
+    sendText(res, 404, "Not found");
     return;
   }
 
   try {
+    const filePath = path.join(__dirname, fileName);
     const file = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     sendText(res, 200, file, MIME_TYPES[ext] || "application/octet-stream");
   } catch (error) {
-    if (error && error.code === "ENOENT") {
-      sendText(res, 404, "Not found");
-      return;
-    }
-
     sendText(res, 500, "Failed to load file");
   }
 }

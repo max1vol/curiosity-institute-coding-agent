@@ -12,10 +12,10 @@
       {
         role: "assistant",
         content:
-          "I’m ready. Send a message and I’ll keep the full conversation history in the request payload.",
-      },
+          "I’m ready. Send a message and I’ll keep the full conversation history in the request payload."
+      }
     ],
-    isSending: false,
+    isSending: false
   };
 
   function setStatus(text, mode = "idle") {
@@ -68,7 +68,7 @@
       id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       role,
       content,
-      ...extra,
+      ...extra
     };
     state.messages.push(message);
     const el = createMessageElement(message);
@@ -85,7 +85,7 @@
 
     state.messages[index] = {
       ...state.messages[index],
-      ...next,
+      ...next
     };
 
     const currentEl = messagesEl.querySelector(`[data-id="${CSS.escape(id)}"]`);
@@ -114,7 +114,7 @@
     setStatus("Sending request to /api/chat", "busy");
     updateComposerState();
 
-    const userMessage = addMessage("user", trimmed);
+    addMessage("user", trimmed);
     const loadingMessage = addMessage("assistant", "Thinking", { loading: true });
 
     promptEl.value = "";
@@ -124,27 +124,27 @@
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
           messages: state.messages
             .filter((message) => !message.loading && !message.error)
-            .map(({ role, content }) => ({ role, content })),
-        }),
+            .map(({ role, content }) => ({ role, content }))
+        })
       });
 
+      const data = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
+        throw new Error(data?.error || `Request failed with status ${response.status}`);
       }
 
-      const data = await response.json();
       if (!data || typeof data.reply !== "string") {
         throw new Error("Invalid response format. Expected { reply: string }.");
       }
 
       replaceMessage(loadingMessage.id, {
         content: data.reply,
-        loading: false,
+        loading: false
       });
 
       setStatus("Ready", "idle");
@@ -187,9 +187,8 @@
       {
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content:
-          "Conversation cleared. Send a new prompt and I’ll start from scratch.",
-      },
+        content: "Conversation cleared. Send a new prompt and I’ll start from scratch."
+      }
     ];
     renderMessages();
     setStatus("Ready", "idle");
