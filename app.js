@@ -315,7 +315,20 @@
 
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(data?.error || `Request failed with status ${response.status}`);
+        if (data && typeof data.error === "string") {
+          removeMessage(loadingMessage.id);
+          addMessage("assistant", data.error, {
+            error: true,
+            manager: data.manager && typeof data.manager === "object" ? data.manager : null,
+            branches: Array.isArray(data.branches) ? data.branches : [],
+            assembly: data.assembly && typeof data.assembly === "object" ? data.assembly : null
+          });
+          setStatus("Request returned diagnostics", "error");
+          connectionPill.textContent = "Backend returned an error";
+          return;
+        }
+
+        throw new Error(`Request failed with status ${response.status}`);
       }
 
       if (!data || typeof data.reply !== "string") {
