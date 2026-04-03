@@ -407,6 +407,8 @@ function createAssemblyInstructions(managerPlan, branches) {
     "You are receiving worker-lead outputs that already synthesize their own subagents.",
     `Worker outputs:\n\n${formatBranchOutputs(branches)}`,
     "Merge the strongest points into one final answer for the user.",
+    "Return plain assistant text, not JSON, unless the user explicitly asked for JSON.",
+    "If the user asked for an exact literal string or token, return that literal output exactly.",
     "Resolve conflicts where possible and mention uncertainty only when it materially affects the answer.",
     "Do not mention the internal manager/worker/subagent process unless the user explicitly asked for it."
   ].join("\n\n");
