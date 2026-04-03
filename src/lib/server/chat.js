@@ -1,7 +1,7 @@
-const OPENAI_API_URL = "https://api.openai.com/v1/responses";
+import { generateText } from "@ljoukov/llm";
 
 export const MODEL = "gpt-5.4";
-export const REASONING_EFFORT = "xhigh";
+export const REASONING_EFFORT = "high";
 export const MANAGER_MODEL = "gpt-5.4-mini";
 export const MANAGER_REASONING_EFFORT = "medium";
 export const WORKER_MODEL = "gpt-5.4-mini";
@@ -54,7 +54,7 @@ export const WORKER_SUBAGENTS = [
 const MAX_MESSAGES = 24;
 const OPENAI_TIMEOUT_MS = 45000;
 const ORCHESTRATION_STRATEGY = "manager-worker-subagents-v3";
-const WEB_SEARCH_TOOLS = [{ type: "web_search" }];
+const WEB_SEARCH_TOOLS = [{ type: "web-search", mode: "live" }];
 const BASE_ASSISTANT_INSTRUCTIONS =
   "You are a practical coding assistant for the Curiosity Institute. Be clear, concise, and concrete.";
 
@@ -82,49 +82,6 @@ export function normalizeMessages(value) {
   return normalized;
 }
 
-function toResponsesInput(messages) {
-  return messages.map((message) => ({
-    type: "message",
-    role: message.role,
-    content: [
-      {
-        type: "input_text",
-        text: message.content
-      }
-    ]
-  }));
-}
-
-function extractReply(response) {
-  if (typeof response.output_text === "string" && response.output_text.trim()) {
-    return response.output_text.trim();
-  }
-
-  if (!Array.isArray(response.output)) {
-    return "";
-  }
-
-  const parts = [];
-
-  for (const item of response.output) {
-    if (item?.type !== "message" || item.role !== "assistant" || !Array.isArray(item.content)) {
-      continue;
-    }
-
-    for (const content of item.content) {
-      if (content?.type === "output_text" && typeof content.text === "string") {
-        parts.push(content.text);
-      }
-
-      if (content?.type === "refusal" && typeof content.refusal === "string") {
-        parts.push(content.refusal);
-      }
-    }
-  }
-
-  return parts.join("\n").trim();
-}
-
 function sanitizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -150,96 +107,75 @@ function extractJsonObject(text) {
   }
 }
 
+function toThinkingLevel(reasoningEffort) {
+  switch (reasoningEffort) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    default:
+      return "high";
+  }
+}
+
 async function callOpenAiTextWithProfile(openAiApiKey, model, reasoningEffort, instructions, messages) {
-  let upstream;
+  if (openAiApiKey && process.env.OPENAI_API_KEY !== openAiApiKey) {
+    process.env.OPENAI_API_KEY = openAiApiKey;
+  }
 
   try {
-    upstream = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
-      headers: {
-        Authorization: `Bearer ${openAiApiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        reasoning: {
-          effort: reasoningEffort
-        },
-        instructions,
-        input: toResponsesInput(messages),
-        tools: WEB_SEARCH_TOOLS,
-        tool_choice: "auto"
-      })
+    const result = await generateText({
+      model,
+      instructions,
+      input: messages,
+      thinkingLevel: toThinkingLevel(reasoningEffort),
+      tools: WEB_SEARCH_TOOLS,
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS)
     });
-  } catch (error) {
-    return {
-      ok: false,
-      status: 502,
-      payload: {
-        error:
-          error.name === "TimeoutError"
-            ? "OpenAI API request timed out."
-            : "Failed to reach the OpenAI API.",
-        details: error.message
-      }
-    };
-  }
+    const reply = sanitizeText(result.text);
 
-  let payload;
-  try {
-    payload = await upstream.json();
-  } catch {
-    return {
-      ok: false,
-      status: 502,
-      payload: {
-        error: "OpenAI API returned an unreadable response."
-      }
-    };
-  }
-
-  if (!upstream.ok) {
-    return {
-      ok: false,
-      status: upstream.status,
-      payload: {
-        error: payload?.error?.message || "OpenAI API request failed."
-      }
-    };
-  }
-
-  if (payload?.status && payload.status !== "completed") {
-    return {
-      ok: false,
-      status: 502,
-      payload: {
-        error:
-          payload?.incomplete_details?.reason ||
-          payload?.error?.message ||
-          `OpenAI response status was ${payload.status}.`
-      }
-    };
-  }
-
-  const reply = extractReply(payload);
-  if (!reply) {
-    return {
-      ok: false,
-      status: 502,
-      payload: {
-        error: "OpenAI API returned no assistant text."
-      }
-    };
-  }
-
-  return {
-    ok: true,
-    status: 200,
-    payload: {
-      reply
+    if (result.blocked) {
+      return {
+        ok: false,
+        status: 502,
+        payload: {
+          error: "The model blocked the request."
+        }
+      };
     }
-  };
+
+    if (!reply) {
+      return {
+        ok: false,
+        status: 502,
+        payload: {
+          error: "The model returned no assistant text."
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      payload: {
+        reply
+      }
+    };
+  } catch (error) {
+    const details = error instanceof Error ? error.message : "Unknown error";
+
+    return {
+      ok: false,
+      status: 502,
+      payload: {
+        error:
+          error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
+            ? "OpenAI API request timed out."
+            : details || "OpenAI API request failed.",
+        details
+      }
+    };
+  }
 }
 
 async function callOpenAiText(openAiApiKey, instructions, messages) {

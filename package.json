@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SvelteKit chat app for the Curiosity Institute, wired to GPT-5.4 xhigh.",
+  "description": "SvelteKit chat app for the Curiosity Institute, wired to GPT-5.4 through @ljoukov/llm.",
   "scripts": {
     "dev": "vite dev --host 127.0.0.1 --port 3000",
     "build": "vite build",
@@ -11,7 +11,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json"
   },
   "engines": {
-    "node": "18.x || 20.x || 22.x"
+    "node": "22.x"
   },
   "devDependencies": {
     "@sveltejs/adapter-vercel": "^5.10.3",
@@ -20,5 +20,8 @@
     "svelte": "^5.55.1",
     "svelte-check": "^4.4.6",
     "vite": "^6.4.1"
+  },
+  "dependencies": {
+    "@ljoukov/llm": "^7.0.0"
   }
 }

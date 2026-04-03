@@ -225,7 +225,7 @@
   <title>Curiosity Chat</title>
   <meta
     name="description"
-    content="A focused browser chat connected to GPT-5.4 xhigh through a SvelteKit backend."
+    content="A focused browser chat connected to GPT-5.4 through @ljoukov/llm and a SvelteKit backend."
   />
 </svelte:head>
 
@@ -235,7 +235,7 @@
 <main class="shell">
   <section class="hero card">
     <div class="eyebrow">Curiosity Institute</div>
-    <h1>Chat with GPT-5.4 xhigh</h1>
+    <h1>Chat with GPT-5.4</h1>
     <p>
       A SvelteKit browser chat wired to a manager-led GPT pipeline. Each turn is steered by
       a manager GPT, delegated to worker leads with their own subagents, then assembled into
