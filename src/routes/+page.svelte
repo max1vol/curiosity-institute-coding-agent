@@ -1,5 +1,5 @@
 <script>
-  import { onMount, tick } from "svelte";
+  import { afterUpdate, beforeUpdate, onMount, tick } from "svelte";
   import ChatMessage from "$lib/components/ChatMessage.svelte";
 
   export let data;
@@ -11,20 +11,21 @@
     "Session locked. Verify again to use the chat.";
 
   let nextMessageId = 1;
-  let messages = [createMessage("assistant", INITIAL_ASSISTANT_MESSAGE)];
+  let verified = data.verified;
+  let messages = [createMessage("assistant", INITIAL_ASSISTANT_MESSAGE, { localOnly: true })];
   let isSending = false;
   let prompt = "";
-  let statusText = data.verified
+  let statusText = verified
     ? "Ready"
     : data.verificationError
       ? "Verification failed"
       : "Verification required";
-  let statusMode = data.verified
+  let statusMode = verified
     ? "idle"
     : data.verificationError
       ? "error"
       : "locked";
-  let connectionPill = data.verified
+  let connectionPill = verified
     ? "Verified session active"
     : data.verificationConfigured
       ? data.verificationError
@@ -34,6 +35,7 @@
   let promptEl;
   let verificationInputEl;
   let messagesEl;
+  let shouldAutoScroll = true;
 
   function createMessage(role, content, extra = {}) {
     return {
@@ -66,6 +68,18 @@
     messages = messages.filter((message) => message.id !== id);
   }
 
+  function isNearBottom() {
+    if (!messagesEl) {
+      return true;
+    }
+
+    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 120;
+  }
+
+  function handleMessagesScroll() {
+    shouldAutoScroll = isNearBottom();
+  }
+
   async function focusPrompt() {
     await tick();
     resizePrompt();
@@ -79,7 +93,7 @@
 
   async function sendMessage() {
     const trimmed = prompt.trim();
-    if (!data.verified || !trimmed || isSending) {
+    if (!verified || !trimmed || isSending) {
       return;
     }
 
@@ -107,7 +121,7 @@
         },
         body: JSON.stringify({
           messages: requestMessages
-            .filter((message) => !message.loading && !message.error)
+            .filter((message) => !message.loading && !message.error && !message.localOnly)
             .map(({ role, content }) => ({ role, content }))
         })
       });
@@ -117,7 +131,12 @@
       if (!response.ok) {
         if (response.status === 401) {
           removeMessage(loadingMessage.id);
-          window.location.reload();
+          verified = false;
+          messages = [createMessage("assistant", LOCKED_ASSISTANT_MESSAGE, { localOnly: true })];
+          prompt = "";
+          resizePrompt();
+          setStatus("Verification required", "locked");
+          connectionPill = "Verification required";
           void focusVerificationInput();
           return;
         }
@@ -170,16 +189,20 @@
       console.error(error);
     } finally {
       isSending = false;
-      void focusPrompt();
+      if (verified) {
+        void focusPrompt();
+      } else {
+        void focusVerificationInput();
+      }
     }
   }
 
   function clearConversation() {
-    if (!data.verified || isSending) {
+    if (!verified || isSending) {
       return;
     }
 
-    messages = [createMessage("assistant", CLEARED_ASSISTANT_MESSAGE)];
+    messages = [createMessage("assistant", CLEARED_ASSISTANT_MESSAGE, { localOnly: true })];
     setStatus("Ready", "idle");
     connectionPill = "Connecting to /api/chat";
     void focusPrompt();
@@ -191,30 +214,32 @@
   }
 
   function handlePromptKeydown(event) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       void sendMessage();
     }
   }
 
-  $: if (messages.length) {
-    tick().then(() => {
-      if (messagesEl) {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-    });
-  }
+  beforeUpdate(() => {
+    shouldAutoScroll = isNearBottom();
+  });
+
+  afterUpdate(() => {
+    if (messagesEl && shouldAutoScroll) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  });
 
   onMount(() => {
     resizePrompt();
-    if (data.verified) {
+    if (verified) {
       promptEl?.focus();
     } else {
       verificationInputEl?.focus();
     }
   });
 
-  $: if (data.verified) {
+  $: if (verified) {
     void focusPrompt();
   } else if (data.verificationConfigured) {
     void focusVerificationInput();
@@ -244,7 +269,7 @@
     <div class="hero-meta">
       <span class="pill">{connectionPill}</span>
       <span class="pill subtle">
-        {#if data.verified}
+        {#if verified}
           Verified session - manager + worker subagents + web search
         {:else}
           Access code required before chat is enabled
@@ -261,7 +286,7 @@
       </div>
 
       <div class="toolbar-actions">
-        {#if data.verified}
+        {#if verified}
           <button class="ghost-button" type="button" on:click={clearConversation} disabled={isSending}>
             Clear
           </button>
@@ -272,8 +297,14 @@
       </div>
     </div>
 
-    {#if data.verified}
-      <div class="messages" bind:this={messagesEl} aria-live="polite" aria-relevant="additions text">
+    {#if verified}
+      <div
+        class="messages"
+        bind:this={messagesEl}
+        aria-live="polite"
+        aria-relevant="additions text"
+        on:scroll={handleMessagesScroll}
+      >
         {#each messages as message (message.id)}
           <ChatMessage {message} />
         {/each}

@@ -4,7 +4,7 @@ export const VERIFICATION_COOKIE_NAME = "curiosity_chat_verified";
 
 const COOKIE_TTL_SECONDS = 60 * 60 * 24 * 30;
 const HMAC_CONTEXT = "curiosity-chat-verification";
-const TOKEN_VERSION = "v1";
+const TOKEN_VERSION = "v2";
 
 function normalizeAccessCode(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -22,12 +22,35 @@ function safeEqual(left, right) {
 }
 
 function createVerificationToken(accessCode) {
-  const normalizedAccessCode = normalizeAccessCode(accessCode);
-  const digest = createHmac("sha256", `${HMAC_CONTEXT}:${normalizedAccessCode}`)
-    .update("verified")
-    .digest("hex");
+  const expiresAt = Math.floor(Date.now() / 1000) + COOKIE_TTL_SECONDS;
+  const digest = createVerificationDigest(accessCode, expiresAt);
 
-  return `${TOKEN_VERSION}.${digest}`;
+  return `${TOKEN_VERSION}.${expiresAt}.${digest}`;
+}
+
+function createVerificationDigest(accessCode, expiresAt) {
+  const normalizedAccessCode = normalizeAccessCode(accessCode);
+  return createHmac("sha256", `${HMAC_CONTEXT}:${normalizedAccessCode}`)
+    .update(`${TOKEN_VERSION}:${expiresAt}`)
+    .digest("hex");
+}
+
+function parseVerificationToken(cookieValue) {
+  if (typeof cookieValue !== "string") {
+    return null;
+  }
+
+  const [version, expiresAtRaw, digest] = cookieValue.split(".");
+  const expiresAt = Number.parseInt(expiresAtRaw, 10);
+
+  if (version !== TOKEN_VERSION || !Number.isFinite(expiresAt) || !digest) {
+    return null;
+  }
+
+  return {
+    expiresAt,
+    digest
+  };
 }
 
 export function isAccessCodeConfigured(accessCode) {
@@ -46,11 +69,17 @@ export function isSubmittedAccessCodeValid(submittedAccessCode, configuredAccess
 }
 
 export function hasValidVerificationCookie(cookieValue, configuredAccessCode) {
-  if (!isAccessCodeConfigured(configuredAccessCode) || typeof cookieValue !== "string") {
+  if (!isAccessCodeConfigured(configuredAccessCode)) {
     return false;
   }
 
-  return safeEqual(cookieValue, createVerificationToken(configuredAccessCode));
+  const token = parseVerificationToken(cookieValue);
+
+  if (!token || token.expiresAt <= Math.floor(Date.now() / 1000)) {
+    return false;
+  }
+
+  return safeEqual(token.digest, createVerificationDigest(configuredAccessCode, token.expiresAt));
 }
 
 export function setVerificationCookie(cookies, configuredAccessCode, secure) {

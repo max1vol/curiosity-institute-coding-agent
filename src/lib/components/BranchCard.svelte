@@ -29,5 +29,23 @@
     </div>
   {/if}
 
+  {#if branch?.modifier}
+    <div class="branch-subagents">
+      Modifier: {branch.modifier.attemptsUsed}/{branch.modifier.adaptationLimit} attempts
+      {#if branch.modifier.stoppedReason}
+        - {branch.modifier.stoppedReason}
+      {/if}
+    </div>
+  {/if}
+
+  {#if branch?.grading}
+    <div class="branch-subagents">
+      Grader: winner attempt {branch.grading.winnerAttempt || "n/a"}
+      {#if Array.isArray(branch.grading.rounds) && branch.grading.rounds.length > 0}
+        - {branch.grading.rounds.length} rounds
+      {/if}
+    </div>
+  {/if}
+
   <div class="branch-output">{typeof branch?.output === "string" ? branch.output : ""}</div>
 </article>
