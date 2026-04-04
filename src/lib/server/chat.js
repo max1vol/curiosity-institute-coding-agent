@@ -229,12 +229,13 @@ function createOrchestrationProfile(messages) {
     return {
       id: "probe",
       expectsLiteral,
+      workerKeys: ["solver"],
       managerMode: "fallback",
       branchAttempts: 1,
       candidateTargets: {
-        mapper: 1,
         solver: 1,
-        skeptic: 1
+        skeptic: 0,
+        mapper: 0
       },
       goodEnoughChars: expectsLiteral ? 1 : 48
     };
@@ -244,12 +245,13 @@ function createOrchestrationProfile(messages) {
     return {
       id: "fast",
       expectsLiteral,
+      workerKeys: expectsLiteral ? ["solver"] : ["solver", "skeptic"],
       managerMode: "fallback",
       branchAttempts: 1,
       candidateTargets: {
-        mapper: 1,
         solver: 1,
-        skeptic: 1
+        skeptic: expectsLiteral ? 0 : 1,
+        mapper: 0
       },
       goodEnoughChars: expectsLiteral ? 1 : MIN_STRONG_BRANCH_OUTPUT_CHARS
     };
@@ -259,6 +261,7 @@ function createOrchestrationProfile(messages) {
     return {
       id: "deep",
       expectsLiteral,
+      workerKeys: BRANCH_WORKERS.map((worker) => worker.key),
       managerMode: "model",
       branchAttempts: 3,
       candidateTargets: {
@@ -273,6 +276,7 @@ function createOrchestrationProfile(messages) {
   return {
     id: "standard",
     expectsLiteral,
+    workerKeys: BRANCH_WORKERS.map((worker) => worker.key),
     managerMode: "model",
     branchAttempts: 2,
     candidateTargets: {
@@ -1185,7 +1189,8 @@ function createClientManagerView(managerPlan, profile) {
     reasoningEffort: managerPlan.reasoningEffort,
     strategy: managerPlan.strategy,
     brief: managerPlan.brief,
-    profile: profile.id
+    profile: profile.id,
+    workerCount: Array.isArray(profile?.workerKeys) ? profile.workerKeys.length : BRANCH_WORKERS.length
   };
 }
 
@@ -1247,6 +1252,48 @@ function createAssemblyState(profile, tools, extra = {}) {
   };
 }
 
+function getActiveWorkerAssignments(managerPlan, profile) {
+  const workerKeys = Array.isArray(profile?.workerKeys) && profile.workerKeys.length > 0
+    ? profile.workerKeys
+    : BRANCH_WORKERS.map((worker) => worker.key);
+  const defaultWorkers = createDefaultManagerPlan().workers;
+
+  return workerKeys
+    .map((workerKey) => {
+      const worker = BRANCH_WORKERS.find((item) => item.key === workerKey);
+
+      if (!worker) {
+        return null;
+      }
+
+      const assignment =
+        managerPlan.workers.find((item) => item.key === workerKey) ||
+        defaultWorkers.find((item) => item.key === workerKey);
+
+      if (!assignment) {
+        return null;
+      }
+
+      return {
+        worker,
+        assignment
+      };
+    })
+    .filter(Boolean);
+}
+
+function shouldShortCircuitAssembly(profile, tools, usableBranches) {
+  if (!Array.isArray(usableBranches) || usableBranches.length !== 1) {
+    return false;
+  }
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    return false;
+  }
+
+  return profile?.id === "probe" || Boolean(profile?.expectsLiteral);
+}
+
 export async function requestReply(openAiApiKey, messages) {
   if (!openAiApiKey) {
     return {
@@ -1261,20 +1308,20 @@ export async function requestReply(openAiApiKey, messages) {
   const profile = createOrchestrationProfile(messages);
   const assemblyTools = shouldUseWebSearch(messages) ? WEB_SEARCH_TOOLS : NO_TOOLS;
   const managerPlan = await requestManagerPlan(openAiApiKey, messages, profile);
+  const activeWorkerAssignments = getActiveWorkerAssignments(managerPlan, profile);
 
   const branchSettled = await Promise.allSettled(
-    managerPlan.workers.map((assignment, index) =>
-      requestBranchReply(openAiApiKey, messages, BRANCH_WORKERS[index], assignment, managerPlan, profile)
+    activeWorkerAssignments.map(({ worker, assignment }) =>
+      requestBranchReply(openAiApiKey, messages, worker, assignment, managerPlan, profile)
     )
   );
 
   const branches = branchSettled.map((result, index) => {
+    const { worker, assignment } = activeWorkerAssignments[index];
+
     if (result.status === "fulfilled") {
       return result.value;
     }
-
-    const worker = BRANCH_WORKERS[index];
-    const assignment = managerPlan.workers[index];
 
     return createBranchState(worker, assignment, {
       status: "error",
@@ -1321,6 +1368,26 @@ export async function requestReply(openAiApiKey, messages) {
           ...assembly,
           skipped: true,
           reason: "No successful branch outputs were available for assembly."
+        }
+      }
+    };
+  }
+
+  if (shouldShortCircuitAssembly(profile, assemblyTools, usableBranches)) {
+    return {
+      ok: true,
+      status: 200,
+      payload: {
+        reply: usableBranches[0].output,
+        model: WORKER_MODEL,
+        reasoningEffort: WORKER_REASONING_EFFORT,
+        manager: createClientManagerView(managerPlan, profile),
+        branches: branches.map(createClientBranchView),
+        assembly: {
+          ...assembly,
+          skipped: true,
+          branchCount: usableBranches.length,
+          reason: "Single-branch fast path returned the worker result directly."
         }
       }
     };

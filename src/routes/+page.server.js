@@ -1,37 +1,44 @@
 import { env as privateEnv } from "$env/dynamic/private";
-import { env as publicEnv } from "$env/dynamic/public";
 import { createAccessState, createNoStoreHeaders } from "$lib/server/access";
+import {
+  createAccessStoreConfig,
+  isAccessStoreConfigured,
+  listAuthorizedUsers,
+  validateAuthorizedSession
+} from "$lib/server/access-store";
+import { createMailConfig, isMailConfigured } from "$lib/server/mailer";
 
-export function load({ cookies, setHeaders, url }) {
+export async function load({ cookies, setHeaders }) {
   setHeaders(createNoStoreHeaders());
 
-  const accessState = createAccessState(cookies, {
-    accessCode: privateEnv.CHAT_ACCESS_CODE,
-    sessionSecret: privateEnv.SESSION_TOKEN_SECRET,
-    googleClientId: publicEnv.PUBLIC_GOOGLE_CLIENT_ID,
-    allowedGoogleEmails: privateEnv.GOOGLE_ALLOWED_EMAILS,
-    voucherCatalogValue: privateEnv.CHAT_VOUCHERS
-  });
+  const storeConfig = createAccessStoreConfig(privateEnv);
+  const mailConfig = createMailConfig(privateEnv);
+  const accessState = await validateAuthorizedSession(
+    createAccessState(cookies, {
+      sessionSecret: privateEnv.SESSION_TOKEN_SECRET,
+      adminEmailsValue: privateEnv.EMAIL_AUTH_ADMINS,
+      mailConfigured: isMailConfigured(mailConfig),
+      storeConfigured: isAccessStoreConfigured(storeConfig)
+    }),
+    storeConfig,
+    privateEnv.EMAIL_AUTH_ADMINS
+  );
 
   return {
-    googleClientId: publicEnv.PUBLIC_GOOGLE_CLIENT_ID || "",
-    googleError: url.searchParams.get("googleError"),
-    voucherError: url.searchParams.get("voucherError"),
-    verificationError: url.searchParams.get("verificationError"),
-    googleAuthConfigured: accessState.googleConfigured,
-    voucherActivationConfigured: accessState.voucherConfigured,
-    verificationConfigured: accessState.verificationConfigured,
-    googleConfigured: accessState.googleConfigured,
-    voucherConfigured: accessState.voucherConfigured,
-    googleAuthenticated: accessState.googleAuthenticated,
-    googleEmail: accessState.googleSession?.email || "",
-    googleName: accessState.googleSession?.name || "",
-    googlePicture: accessState.googleSession?.picture || "",
-    voucherActivated: accessState.voucherActivated,
-    voucherId: accessState.voucherSession?.voucherId || "",
-    verified: accessState.verified,
-    readyForVerification: accessState.readyForVerification,
+    authConfigured: accessState.authConfigured,
+    sessionSecretConfigured: accessState.sessionSecretConfigured,
+    mailConfigured: accessState.mailConfigured,
+    storeConfigured: accessState.storeConfigured,
+    adminBootstrapConfigured: accessState.adminBootstrapConfigured,
+    authenticated: accessState.authenticated,
+    challengeActive: accessState.challengeActive,
+    challengeEmail: accessState.challenge?.email || "",
+    userEmail: accessState.user?.email || "",
+    userRole: accessState.user?.role || "",
+    isAdmin: accessState.isAdmin,
     readyForChat: accessState.readyForChat,
-    chatUnlocked: accessState.readyForChat
+    authorizedUsers: accessState.isAdmin
+      ? await listAuthorizedUsers(storeConfig, privateEnv.EMAIL_AUTH_ADMINS)
+      : []
   };
 }

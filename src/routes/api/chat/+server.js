@@ -1,84 +1,97 @@
 import { json } from "@sveltejs/kit";
 import { env as privateEnv } from "$env/dynamic/private";
-import { env as publicEnv } from "$env/dynamic/public";
-import { createAccessState, createNoStoreHeaders } from "$lib/server/access";
+import { clearEmailAuthCookie, createAccessState, createNoStoreHeaders } from "$lib/server/access";
+import {
+  createAccessStoreConfig,
+  isAccessStoreConfigured,
+  validateAuthorizedSession
+} from "$lib/server/access-store";
 import { normalizeMessages, requestReply } from "$lib/server/chat";
+import { createMailConfig, isMailConfigured } from "$lib/server/mailer";
 
 export const config = {
   split: true,
   maxDuration: 300
 };
 
-function createGateErrorResponse(accessState, headers) {
-  const gateState = {
-    googleConfigured: accessState.googleConfigured,
-    voucherConfigured: accessState.voucherConfigured,
-    verificationConfigured: accessState.verificationConfigured,
-    googleAuthenticated: accessState.googleAuthenticated,
-    voucherActivated: accessState.voucherActivated,
-    verified: accessState.verified,
-    readyForChat: accessState.readyForChat
+function createGate(accessState) {
+  return {
+    authConfigured: accessState.authConfigured,
+    sessionSecretConfigured: accessState.sessionSecretConfigured,
+    mailConfigured: accessState.mailConfigured,
+    storeConfigured: accessState.storeConfigured,
+    adminBootstrapConfigured: accessState.adminBootstrapConfigured,
+    authenticated: accessState.authenticated,
+    challengeActive: accessState.challengeActive,
+    readyForChat: accessState.readyForChat,
+    isAdmin: accessState.isAdmin
   };
+}
 
-  if (!accessState.googleConfigured) {
+function createGateErrorResponse(accessState, headers) {
+  const gate = createGate(accessState);
+
+  if (!accessState.sessionSecretConfigured) {
+    return json(
+      { error: "SESSION_TOKEN_SECRET is not configured.", gate },
+      { status: 503, headers }
+    );
+  }
+
+  if (!accessState.adminBootstrapConfigured) {
+    return json(
+      { error: "EMAIL_AUTH_ADMINS is not configured.", gate },
+      { status: 503, headers }
+    );
+  }
+
+  if (!accessState.storeConfigured) {
     return json(
       {
-        error: "Google authentication is not configured. Set PUBLIC_GOOGLE_CLIENT_ID first.",
-        gate: gateState
+        error:
+          "Durable email access storage is not configured. Set BLOB_READ_WRITE_TOKEN on Vercel or use local file storage in development.",
+        gate
       },
       { status: 503, headers }
     );
   }
 
-  if (!accessState.voucherConfigured) {
-    return json(
-      { error: "Voucher activation is not configured. Set CHAT_VOUCHERS first.", gate: gateState },
-      { status: 503, headers }
-    );
-  }
-
-  if (!accessState.verificationConfigured) {
+  if (!accessState.mailConfigured) {
     return json(
       {
-        error: "CHAT_ACCESS_CODE is not set. Configure verification before using the chat.",
-        gate: gateState
+        error:
+          "Email delivery is not configured. Set SMTP_URL and SMTP_FROM, or SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_FROM.",
+        gate
       },
       { status: 503, headers }
-    );
-  }
-
-  if (!accessState.googleAuthenticated) {
-    return json(
-      { error: "Google sign-in required before using the chat.", gate: gateState },
-      { status: 401, headers }
-    );
-  }
-
-  if (!accessState.voucherActivated) {
-    return json(
-      { error: "Activate a voucher before using the chat.", gate: gateState },
-      { status: 401, headers }
     );
   }
 
   return json(
-    {
-      error: "Verification required after Google sign-in and voucher activation.",
-      gate: gateState
-    },
+    { error: "Email login required before using the chat.", gate },
     { status: 401, headers }
   );
 }
 
 export async function POST({ request, cookies }) {
   const headers = createNoStoreHeaders();
-  const accessState = createAccessState(cookies, {
-    accessCode: privateEnv.CHAT_ACCESS_CODE,
+  const storeConfig = createAccessStoreConfig(privateEnv);
+  const mailConfig = createMailConfig(privateEnv);
+  const initialAccessState = createAccessState(cookies, {
     sessionSecret: privateEnv.SESSION_TOKEN_SECRET,
-    googleClientId: publicEnv.PUBLIC_GOOGLE_CLIENT_ID,
-    allowedGoogleEmails: privateEnv.GOOGLE_ALLOWED_EMAILS,
-    voucherCatalogValue: privateEnv.CHAT_VOUCHERS
+    adminEmailsValue: privateEnv.EMAIL_AUTH_ADMINS,
+    mailConfigured: isMailConfigured(mailConfig),
+    storeConfigured: isAccessStoreConfigured(storeConfig)
   });
+  const accessState = await validateAuthorizedSession(
+    initialAccessState,
+    storeConfig,
+    privateEnv.EMAIL_AUTH_ADMINS
+  );
+
+  if (initialAccessState.authenticated && !accessState.authenticated) {
+    clearEmailAuthCookie(cookies, request.url.startsWith("https:"));
+  }
 
   if (!accessState.readyForChat) {
     return createGateErrorResponse(accessState, headers);

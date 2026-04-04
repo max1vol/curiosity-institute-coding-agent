@@ -22,7 +22,8 @@
     "vite": "^6.4.1"
   },
   "dependencies": {
+    "@vercel/blob": "^1.1.1",
     "@ljoukov/llm": "^7.0.0",
-    "google-auth-library": "^10.6.2"
+    "nodemailer": "^6.10.1"
   }
 }

@@ -4,50 +4,65 @@
 
   export let data;
 
-  const GOOGLE_SCRIPT_URL = "https://accounts.google.com/gsi/client";
   const INITIAL_ASSISTANT_MESSAGE =
     "I'm ready. Each turn is steered by a manager GPT, delegated to worker subagents, then reassembled into one final answer.";
   const CLEARED_ASSISTANT_MESSAGE =
     "Conversation cleared. Send a new prompt and I'll start a fresh manager-led subagent run.";
   const LOCKED_ASSISTANT_MESSAGE =
-    "Access gate required again. Sign in with Google, activate a voucher, and verify to continue.";
+    "Access is locked again. Sign in with your approved email to continue.";
+  const CHAT_STORAGE_KEY = "curiosity-chat-state-v2";
+  const MAX_PERSISTED_MESSAGES = 20;
 
   let nextMessageId = 1;
-  let verified = data.verified;
-  let googleConfigured = data.googleConfigured;
-  let googleAuthenticated = data.googleAuthenticated;
-  let googleClientId = data.googleClientId;
-  let googleEmail = data.googleEmail;
-  let googleName = data.googleName;
-  let googlePicture = data.googlePicture;
-  let voucherConfigured = data.voucherConfigured;
-  let voucherActivated = data.voucherActivated;
-  let voucherId = data.voucherId;
-  let verificationConfigured = data.verificationConfigured;
-  let readyForVerification = data.readyForVerification;
+  let authConfigured = data.authConfigured;
+  let sessionSecretConfigured = data.sessionSecretConfigured;
+  let mailConfigured = data.mailConfigured;
+  let storeConfigured = data.storeConfigured;
+  let adminBootstrapConfigured = data.adminBootstrapConfigured;
+  let authenticated = data.authenticated;
+  let challengeActive = data.challengeActive;
+  let challengeEmail = data.challengeEmail || "";
+  let userEmail = data.userEmail || "";
+  let userRole = data.userRole || "member";
+  let isAdmin = data.isAdmin;
   let chatUnlocked = data.readyForChat;
-  let googleErrorMessage = getGoogleErrorMessage(data.googleError);
-  let voucherErrorMessage = getVoucherErrorMessage(data.voucherError);
-  let verificationErrorMessage = getVerificationErrorMessage(data.verificationError);
-  let messages = [createMessage("assistant", INITIAL_ASSISTANT_MESSAGE, { localOnly: true })];
-  let isSending = false;
-  let isGoogleAuthenticating = false;
-  let isVoucherActivating = false;
-  let isVerifying = false;
+  let authorizedUsers = Array.isArray(data.authorizedUsers) ? data.authorizedUsers : [];
+
+  let messages = createInitialMessages();
   let prompt = "";
-  let voucherCode = "";
-  let accessCode = "";
+  let authEmail = userEmail || challengeEmail || "";
+  let loginCode = "";
+  let manageEmail = "";
+  let manageRole = "member";
+
   let statusText = "";
   let statusMode = "locked";
   let connectionPill = "";
+  let emailErrorMessage = data.emailError || "";
+  let emailStatusMessage = "";
+  let manageErrorMessage = "";
+  let manageStatusMessage = "";
+
+  let isSending = false;
+  let isSendingCode = false;
+  let isVerifyingCode = false;
+  let isLoadingUsers = false;
+  let isSavingUser = false;
+  let removingEmail = "";
+  let requestController = null;
+  let lastFailedRequestMessages = null;
+  let hasMounted = false;
+
   let promptEl;
-  let voucherInputEl;
-  let verificationInputEl;
-  let googleButtonEl;
+  let emailInputEl;
+  let codeInputEl;
   let messagesEl;
   let shouldAutoScroll = true;
   let lastMessageCount = messages.length;
-  let googleScriptPromise;
+
+  function createInitialMessages() {
+    return [createMessage("assistant", INITIAL_ASSISTANT_MESSAGE, { localOnly: true })];
+  }
 
   function createMessage(role, content, extra = {}) {
     return {
@@ -56,6 +71,98 @@
       content,
       ...extra
     };
+  }
+
+  function createLoadingMessage(content = "Manager GPT is briefing worker subagents") {
+    return createMessage("assistant", content, { loading: true });
+  }
+
+  function buildChatRequestMessages(sourceMessages) {
+    return sourceMessages
+      .filter((message) => !message.loading && !message.error && !message.localOnly)
+      .map(({ role, content }) => ({ role, content }));
+  }
+
+  function serializeMessage(message) {
+    return {
+      role: message.role,
+      content: message.content,
+      error: Boolean(message.error),
+      localOnly: Boolean(message.localOnly),
+      manager: message.manager || null,
+      branches: Array.isArray(message.branches) ? message.branches : [],
+      assembly: message.assembly || null
+    };
+  }
+
+  function hydrateMessage(rawMessage) {
+    return createMessage(rawMessage.role, rawMessage.content, {
+      error: Boolean(rawMessage.error),
+      localOnly: Boolean(rawMessage.localOnly),
+      manager: rawMessage.manager && typeof rawMessage.manager === "object" ? rawMessage.manager : null,
+      branches: Array.isArray(rawMessage.branches) ? rawMessage.branches : [],
+      assembly: rawMessage.assembly && typeof rawMessage.assembly === "object" ? rawMessage.assembly : null
+    });
+  }
+
+  function persistChatState() {
+    if (typeof sessionStorage === "undefined") {
+      return;
+    }
+
+    const persistedMessages = messages
+      .filter((message) => !message.loading)
+      .slice(-MAX_PERSISTED_MESSAGES)
+      .map(serializeMessage);
+
+    sessionStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        messages: persistedMessages,
+        prompt,
+        authEmail
+      })
+    );
+  }
+
+  function restoreChatState() {
+    if (typeof sessionStorage === "undefined") {
+      return;
+    }
+
+    const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
+
+    if (!raw) {
+      messages = createInitialMessages();
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      const restoredMessages = Array.isArray(parsed?.messages)
+        ? parsed.messages
+            .filter(
+              (message) =>
+                message &&
+                (message.role === "assistant" || message.role === "user" || message.role === "system") &&
+                typeof message.content === "string" &&
+                message.content.trim().length > 0
+            )
+            .map(hydrateMessage)
+        : [];
+
+      messages = restoredMessages.length > 0 ? restoredMessages : createInitialMessages();
+
+      if (typeof parsed?.prompt === "string") {
+        prompt = parsed.prompt;
+      }
+
+      if (!authenticated && typeof parsed?.authEmail === "string" && parsed.authEmail.trim()) {
+        authEmail = parsed.authEmail.trim().toLowerCase();
+      }
+    } catch {
+      messages = createInitialMessages();
+    }
   }
 
   function setStatus(text, mode = "idle") {
@@ -92,125 +199,49 @@
     shouldAutoScroll = isNearBottom();
   }
 
-  function getGoogleErrorMessage(value) {
-    switch (value) {
-      case "google-missing":
-        return "Google authentication is not configured on the server yet.";
-      case "google-required":
-        return "Sign in with Google before continuing.";
-      default:
-        return "";
-    }
-  }
-
-  function getVoucherErrorMessage(value) {
-    switch (value) {
-      case "google-missing":
-        return "Google authentication is not configured on the server yet.";
-      case "google-required":
-        return "Sign in with Google before activating a voucher.";
-      case "missing":
-      case "voucher-missing":
-        return "Voucher activation is not configured on the server yet.";
-      case "invalid":
-        return "Invalid voucher code.";
-      case "voucher-required":
-        return "Activate a voucher before continuing.";
-      default:
-        return "";
-    }
-  }
-
-  function getVerificationErrorMessage(value) {
-    switch (value) {
-      case "invalid":
-        return "Invalid access code.";
-      case "missing":
-        return "CHAT_ACCESS_CODE is not configured on the server yet.";
-      case "google-missing":
-        return "Google authentication is not configured on the server yet.";
-      case "google-required":
-        return "Sign in with Google before verification.";
-      case "voucher-missing":
-        return "Voucher activation is not configured on the server yet.";
-      case "voucher-required":
-        return "Activate a voucher before verification.";
-      default:
-        return "";
-    }
-  }
-
-  function getStepState(active, configured, complete) {
-    if (!configured) {
-      return "missing";
-    }
-
-    if (complete) {
-      return "done";
-    }
-
-    return active ? "active" : "pending";
-  }
-
-  function applyGateState(gate) {
+  function applyGate(gate) {
     if (!gate || typeof gate !== "object") {
       return;
     }
 
-    if (typeof gate.googleConfigured === "boolean") {
-      googleConfigured = gate.googleConfigured;
+    if (typeof gate.authConfigured === "boolean") {
+      authConfigured = gate.authConfigured;
     }
 
-    if (typeof gate.voucherConfigured === "boolean") {
-      voucherConfigured = gate.voucherConfigured;
+    if (typeof gate.sessionSecretConfigured === "boolean") {
+      sessionSecretConfigured = gate.sessionSecretConfigured;
     }
 
-    if (typeof gate.verificationConfigured === "boolean") {
-      verificationConfigured = gate.verificationConfigured;
+    if (typeof gate.mailConfigured === "boolean") {
+      mailConfigured = gate.mailConfigured;
     }
 
-    if (typeof gate.googleAuthenticated === "boolean") {
-      googleAuthenticated = gate.googleAuthenticated;
+    if (typeof gate.storeConfigured === "boolean") {
+      storeConfigured = gate.storeConfigured;
     }
 
-    if (typeof gate.voucherActivated === "boolean") {
-      voucherActivated = gate.voucherActivated;
+    if (typeof gate.adminBootstrapConfigured === "boolean") {
+      adminBootstrapConfigured = gate.adminBootstrapConfigured;
     }
 
-    if (typeof gate.verified === "boolean") {
-      verified = gate.verified;
-    }
-  }
-
-  function clearGateErrors() {
-    googleErrorMessage = "";
-    voucherErrorMessage = "";
-    verificationErrorMessage = "";
-  }
-
-  function routeGateError(message, gate) {
-    clearGateErrors();
-
-    if (!message) {
-      return;
+    if (typeof gate.authenticated === "boolean") {
+      authenticated = gate.authenticated;
     }
 
-    if (!gate || typeof gate !== "object") {
-      verificationErrorMessage = message;
-      return;
+    if (typeof gate.challengeActive === "boolean") {
+      challengeActive = gate.challengeActive;
     }
 
-    if (!gate.googleConfigured || !gate.googleAuthenticated) {
-      googleErrorMessage = message;
-      return;
+    if (typeof gate.isAdmin === "boolean") {
+      isAdmin = gate.isAdmin;
     }
 
-    if (!gate.voucherConfigured || !gate.voucherActivated) {
-      voucherErrorMessage = message;
-      return;
+    if (!authenticated) {
+      userEmail = "";
+      userRole = "member";
+      chatUnlocked = false;
+      authorizedUsers = [];
     }
-
-    verificationErrorMessage = message;
   }
 
   async function focusPrompt() {
@@ -219,7 +250,7 @@
     promptEl?.focus();
   }
 
-  async function focusActiveGateControl() {
+  async function focusActiveControl() {
     await tick();
 
     if (chatUnlocked) {
@@ -227,249 +258,214 @@
       return;
     }
 
-    if (googleAuthenticated && !voucherActivated) {
-      voucherInputEl?.focus();
+    if (challengeActive) {
+      codeInputEl?.focus();
       return;
     }
 
-    if (readyForVerification) {
-      verificationInputEl?.focus();
-    }
+    emailInputEl?.focus();
   }
 
-  async function ensureGoogleScript() {
-    if (typeof window === "undefined") {
-      return null;
-    }
-
-    if (window.google?.accounts?.id) {
-      return window.google;
-    }
-
-    if (!googleScriptPromise) {
-      googleScriptPromise = new Promise((resolve, reject) => {
-        const existing = document.querySelector(`script[src="${GOOGLE_SCRIPT_URL}"]`);
-
-        if (existing) {
-          existing.addEventListener("load", () => resolve(window.google), { once: true });
-          existing.addEventListener("error", () => reject(new Error("Google script failed to load.")), {
-            once: true
-          });
-          return;
-        }
-
-        const script = document.createElement("script");
-        script.src = GOOGLE_SCRIPT_URL;
-        script.async = true;
-        script.defer = true;
-        script.onload = () => resolve(window.google);
-        script.onerror = () => reject(new Error("Google script failed to load."));
-        document.head.appendChild(script);
-      });
-    }
-
-    return googleScriptPromise;
-  }
-
-  async function handleGoogleCredentialResponse(response) {
-    const credential = typeof response?.credential === "string" ? response.credential.trim() : "";
-
-    if (!credential || isGoogleAuthenticating) {
+  async function loadAuthorizedUsers() {
+    if (!authenticated || !isAdmin) {
+      authorizedUsers = [];
       return;
     }
 
-    isGoogleAuthenticating = true;
-    googleErrorMessage = "";
-    setStatus("Verifying Google sign-in", "busy");
+    isLoadingUsers = true;
+    manageErrorMessage = "";
 
     try {
-      const response = await fetch("/api/google-auth", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ credential })
-      });
+      const response = await fetch("/api/admin/users");
       const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(payload?.error || `Google sign-in failed with status ${response.status}.`);
+        throw new Error(payload?.error || `Failed to load users with status ${response.status}.`);
       }
 
-      googleAuthenticated = true;
-      googleEmail = payload?.googleUser?.email || "";
-      googleName = payload?.googleUser?.name || googleEmail;
-      googlePicture = payload?.googleUser?.picture || "";
-      voucherActivated = false;
-      voucherId = "";
-      voucherCode = "";
-      accessCode = "";
-      verified = false;
-      voucherErrorMessage = "";
-      verificationErrorMessage = "";
+      authorizedUsers = Array.isArray(payload?.users) ? payload.users : [];
     } catch (error) {
-      googleErrorMessage = error instanceof Error ? error.message : "Google sign-in failed.";
+      manageErrorMessage = error instanceof Error ? error.message : "Failed to load allowed emails.";
     } finally {
-      isGoogleAuthenticating = false;
-      void focusActiveGateControl();
+      isLoadingUsers = false;
     }
   }
 
-  async function renderGoogleButton() {
-    if (!googleConfigured || !googleClientId || googleAuthenticated || !googleButtonEl) {
-      return;
-    }
-
-    try {
-      const google = await ensureGoogleScript();
-
-      if (!google?.accounts?.id || !googleButtonEl) {
-        return;
-      }
-
-      if (googleButtonEl.dataset.clientId === googleClientId) {
-        return;
-      }
-
-      googleButtonEl.innerHTML = "";
-      google.accounts.id.initialize({
-        client_id: googleClientId,
-        callback: handleGoogleCredentialResponse,
-        auto_select: false,
-        cancel_on_tap_outside: true
-      });
-      google.accounts.id.renderButton(googleButtonEl, {
-        theme: "outline",
-        size: "large",
-        text: "signin_with",
-        shape: "pill",
-        width: 280
-      });
-      googleButtonEl.dataset.clientId = googleClientId;
-    } catch (error) {
-      googleErrorMessage =
-        error instanceof Error ? error.message : "Unable to load Google sign-in right now.";
-    }
-  }
-
-  async function activateVoucher(event) {
+  async function requestLoginCode(event) {
     event.preventDefault();
 
-    const trimmedVoucherCode = voucherCode.trim();
+    const email = authEmail.trim().toLowerCase();
 
-    if (!googleAuthenticated || !trimmedVoucherCode || isVoucherActivating) {
+    if (!email || isSendingCode) {
       return;
     }
 
-    isVoucherActivating = true;
-    voucherErrorMessage = "";
-    setStatus("Activating voucher", "busy");
+    isSendingCode = true;
+    emailErrorMessage = "";
+    emailStatusMessage = "";
+    setStatus("Sending one-time code", "busy");
 
     try {
-      const response = await fetch("/api/voucher/activate", {
+      const response = await fetch("/api/auth/request-code", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          voucherCode: trimmedVoucherCode
-        })
+        body: JSON.stringify({ email })
       });
       const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        if (response.status === 401) {
-          applyGateState(payload?.gate);
-        }
-
-        throw new Error(payload?.error || `Voucher activation failed with status ${response.status}.`);
+        applyGate(payload?.gate);
+        throw new Error(payload?.error || `Failed to request code with status ${response.status}.`);
       }
 
-      voucherActivated = true;
-      voucherId = payload?.voucher?.id || "";
-      voucherCode = "";
-      accessCode = "";
-      verified = false;
-      verificationErrorMessage = "";
+      challengeActive = true;
+      challengeEmail = email;
+      emailStatusMessage =
+        payload?.message || "If this email has access, a one-time login code has been sent.";
+      loginCode = "";
+      await focusActiveControl();
     } catch (error) {
-      voucherErrorMessage = error instanceof Error ? error.message : "Voucher activation failed.";
+      emailErrorMessage = error instanceof Error ? error.message : "Failed to send sign-in code.";
     } finally {
-      isVoucherActivating = false;
-      void focusActiveGateControl();
+      isSendingCode = false;
     }
   }
 
-  async function verifyAccess(event) {
+  async function verifyLoginCode(event) {
     event.preventDefault();
 
-    const trimmedAccessCode = accessCode.trim();
+    const code = loginCode.trim().toUpperCase();
 
-    if (!readyForVerification || !trimmedAccessCode || isVerifying) {
+    if (!code || isVerifyingCode) {
       return;
     }
 
-    isVerifying = true;
-    verificationErrorMessage = "";
-    setStatus("Checking access code", "busy");
+    isVerifyingCode = true;
+    emailErrorMessage = "";
+    emailStatusMessage = "";
+    setStatus("Verifying email code", "busy");
 
     try {
-      const response = await fetch("/api/verify", {
+      const response = await fetch("/api/auth/verify-code", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          accessCode: trimmedAccessCode
-        })
+        body: JSON.stringify({ code })
       });
       const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        if (response.status === 401 || response.status === 503) {
-          applyGateState(payload?.gate);
-          routeGateError(payload?.error || "Verification failed.", payload?.gate);
-          return;
-        }
-
-        throw new Error(payload?.error || `Verification failed with status ${response.status}.`);
+        applyGate(payload?.gate);
+        throw new Error(payload?.error || `Failed to verify code with status ${response.status}.`);
       }
 
-      verified = true;
-      accessCode = "";
-      verificationErrorMessage = "";
+      authenticated = true;
+      chatUnlocked = true;
+      challengeActive = false;
+      challengeEmail = "";
+      userEmail = payload?.user?.email || authEmail.trim().toLowerCase();
+      userRole = payload?.user?.role || "member";
+      isAdmin = userRole === "admin";
+      loginCode = "";
+      authEmail = userEmail;
+      emailStatusMessage = `Signed in as ${userEmail}.`;
+
+      if (isAdmin) {
+        await loadAuthorizedUsers();
+      }
+
       void focusPrompt();
     } catch (error) {
-      verificationErrorMessage = error instanceof Error ? error.message : "Verification failed.";
+      emailErrorMessage = error instanceof Error ? error.message : "Failed to verify sign-in code.";
     } finally {
-      isVerifying = false;
+      isVerifyingCode = false;
       if (!chatUnlocked) {
-        void focusActiveGateControl();
+        void focusActiveControl();
       }
     }
   }
 
-  async function sendMessage() {
-    const trimmed = prompt.trim();
+  async function saveAuthorizedUser(event) {
+    event.preventDefault();
 
-    if (!chatUnlocked || !trimmed || isSending) {
+    const email = manageEmail.trim().toLowerCase();
+
+    if (!email || isSavingUser) {
       return;
     }
 
-    isSending = true;
-    setStatus("Sending request to /api/chat", "busy");
+    isSavingUser = true;
+    manageErrorMessage = "";
+    manageStatusMessage = "";
 
-    const userMessage = createMessage("user", trimmed);
-    const loadingMessage = createMessage(
-      "assistant",
-      "Manager GPT is briefing worker subagents",
-      { loading: true }
-    );
-    const requestMessages = [...messages, userMessage];
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          email,
+          role: manageRole
+        })
+      });
+      const payload = await response.json().catch(() => null);
 
-    messages = [...requestMessages, loadingMessage];
-    prompt = "";
-    await tick();
-    resizePrompt();
+      if (!response.ok) {
+        applyGate(payload?.gate);
+        throw new Error(payload?.error || `Failed to save email with status ${response.status}.`);
+      }
+
+      authorizedUsers = Array.isArray(payload?.users) ? payload.users : authorizedUsers;
+      manageEmail = "";
+      manageRole = "member";
+      manageStatusMessage = `Saved ${email}.`;
+    } catch (error) {
+      manageErrorMessage = error instanceof Error ? error.message : "Failed to save allowed email.";
+    } finally {
+      isSavingUser = false;
+    }
+  }
+
+  async function removeAuthorizedUser(email) {
+    if (!email || removingEmail) {
+      return;
+    }
+
+    removingEmail = email;
+    manageErrorMessage = "";
+    manageStatusMessage = "";
+
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ email })
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        applyGate(payload?.gate);
+        throw new Error(payload?.error || `Failed to remove email with status ${response.status}.`);
+      }
+
+      authorizedUsers = Array.isArray(payload?.users) ? payload.users : authorizedUsers;
+      manageStatusMessage = `Removed ${email}.`;
+    } catch (error) {
+      manageErrorMessage = error instanceof Error ? error.message : "Failed to remove allowed email.";
+    } finally {
+      removingEmail = "";
+    }
+  }
+
+  async function submitChatRequest(requestPayloadMessages, loadingMessage) {
+    const controller = new AbortController();
+    requestController = controller;
 
     try {
       const response = await fetch("/api/chat", {
@@ -477,38 +473,41 @@
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          messages: requestMessages
-            .filter((message) => !message.loading && !message.error && !message.localOnly)
-            .map(({ role, content }) => ({ role, content }))
-        })
+        body: JSON.stringify({ messages: requestPayloadMessages }),
+        signal: controller.signal
       });
 
       const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        if (response.status === 401) {
-          removeMessage(loadingMessage.id);
-          applyGateState(payload?.gate);
-          messages = [createMessage("assistant", LOCKED_ASSISTANT_MESSAGE, { localOnly: true })];
-          prompt = "";
-          resizePrompt();
-          routeGateError(payload?.error || "Access gate required again.", payload?.gate);
-          void focusActiveGateControl();
+        lastFailedRequestMessages = requestPayloadMessages;
+
+        if (response.status === 401 || response.status === 503) {
+          applyGate(payload?.gate);
+          replaceMessage(loadingMessage.id, {
+            content: LOCKED_ASSISTANT_MESSAGE,
+            loading: false,
+            error: true,
+            localOnly: true,
+            retryable: true
+          });
+          emailErrorMessage = payload?.error || "Email login required again.";
+          setStatus("Chat locked until you sign in again", "error");
+          connectionPill = "Email login required";
+          void focusActiveControl();
           return;
         }
 
         if (payload && typeof payload.error === "string") {
-          removeMessage(loadingMessage.id);
-          messages = [
-            ...messages,
-            createMessage("assistant", payload.error, {
-              error: true,
-              manager: payload.manager && typeof payload.manager === "object" ? payload.manager : null,
-              branches: Array.isArray(payload.branches) ? payload.branches : [],
-              assembly: payload.assembly && typeof payload.assembly === "object" ? payload.assembly : null
-            })
-          ];
+          replaceMessage(loadingMessage.id, {
+            content: payload.error,
+            loading: false,
+            error: true,
+            retryable: true,
+            manager: payload.manager && typeof payload.manager === "object" ? payload.manager : null,
+            branches: Array.isArray(payload.branches) ? payload.branches : [],
+            assembly: payload.assembly && typeof payload.assembly === "object" ? payload.assembly : null
+          });
           setStatus("Request returned diagnostics", "error");
           connectionPill = "Backend returned an error";
           return;
@@ -521,34 +520,100 @@
         throw new Error("Invalid response format. Expected { reply: string }.");
       }
 
+      lastFailedRequestMessages = null;
       replaceMessage(loadingMessage.id, {
         content: payload.reply,
         loading: false,
+        error: false,
+        retryable: false,
         manager: payload.manager && typeof payload.manager === "object" ? payload.manager : null,
         branches: Array.isArray(payload.branches) ? payload.branches : [],
         assembly: payload.assembly && typeof payload.assembly === "object" ? payload.assembly : null
       });
     } catch (error) {
-      removeMessage(loadingMessage.id);
-      messages = [
-        ...messages,
-        createMessage(
-          "system",
-          `Request failed. ${error instanceof Error ? error.message : "Unknown error."}`,
-          { error: true }
-        )
-      ];
-      setStatus("Error talking to /api/chat", "error");
-      connectionPill = "Backend unavailable";
-      console.error(error);
+      const wasAborted = error instanceof Error && error.name === "AbortError";
+
+      lastFailedRequestMessages = requestPayloadMessages;
+      replaceMessage(loadingMessage.id, {
+        content: wasAborted
+          ? "Response stopped before completion. Retry when ready."
+          : `Request failed. ${error instanceof Error ? error.message : "Unknown error."}`,
+        loading: false,
+        error: true,
+        localOnly: wasAborted,
+        retryable: true
+      });
+      setStatus(wasAborted ? "Request stopped" : "Error talking to /api/chat", "error");
+      connectionPill = wasAborted ? "Request stopped" : "Backend unavailable";
+
+      if (!wasAborted) {
+        console.error(error);
+      }
     } finally {
+      if (requestController === controller) {
+        requestController = null;
+      }
+
       isSending = false;
       if (chatUnlocked) {
         void focusPrompt();
       } else {
-        void focusActiveGateControl();
+        void focusActiveControl();
       }
     }
+  }
+
+  async function sendMessage() {
+    const trimmed = prompt.trim();
+
+    if (!chatUnlocked || !trimmed || isSending) {
+      return;
+    }
+
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setStatus("You are offline", "error");
+      connectionPill = "Network unavailable";
+      return;
+    }
+
+    isSending = true;
+    lastFailedRequestMessages = null;
+    setStatus("Sending request to /api/chat", "busy");
+
+    const userMessage = createMessage("user", trimmed);
+    const loadingMessage = createLoadingMessage();
+    const requestMessages = [...messages, userMessage];
+    const requestPayloadMessages = buildChatRequestMessages(requestMessages);
+
+    messages = [...requestMessages, loadingMessage];
+    prompt = "";
+    await tick();
+    resizePrompt();
+
+    await submitChatRequest(requestPayloadMessages, loadingMessage);
+  }
+
+  async function retryLastRequest() {
+    if (!chatUnlocked || isSending || !Array.isArray(lastFailedRequestMessages)) {
+      return;
+    }
+
+    if (messages.at(-1)?.retryable) {
+      messages = messages.slice(0, -1);
+    }
+
+    isSending = true;
+    setStatus("Retrying the last request", "busy");
+
+    const loadingMessage = createLoadingMessage("Retrying the last request");
+    messages = [...messages, loadingMessage];
+    await tick();
+
+    await submitChatRequest(lastFailedRequestMessages, loadingMessage);
+  }
+
+  function stopRequest() {
+    requestController?.abort();
   }
 
   function clearConversation() {
@@ -557,8 +622,9 @@
     }
 
     messages = [createMessage("assistant", CLEARED_ASSISTANT_MESSAGE, { localOnly: true })];
+    lastFailedRequestMessages = null;
     setStatus("Ready", "idle");
-    connectionPill = "Connecting to /api/chat";
+    connectionPill = "Connected to /api/chat";
     void focusPrompt();
   }
 
@@ -575,9 +641,18 @@
   }
 
   onMount(() => {
+    restoreChatState();
+    hasMounted = true;
     resizePrompt();
-    void focusActiveGateControl();
-    void renderGoogleButton();
+    void focusActiveControl();
+
+    if (authenticated && isAdmin && authorizedUsers.length === 0) {
+      void loadAuthorizedUsers();
+    }
+
+    return () => {
+      requestController?.abort();
+    };
   });
 
   $: if (messages.length !== lastMessageCount) {
@@ -591,50 +666,49 @@
     });
   }
 
-  $: readyForVerification =
-    verificationConfigured &&
-    googleConfigured &&
-    voucherConfigured &&
-    googleAuthenticated &&
-    voucherActivated;
+  $: chatUnlocked = authenticated;
 
-  $: chatUnlocked = readyForVerification && verified;
-
-  $: if (!googleAuthenticated) {
-    googleEmail = "";
-    googleName = "";
-    googlePicture = "";
-    voucherActivated = false;
-    voucherId = "";
-    accessCode = "";
+  $: if (authenticated) {
+    challengeActive = false;
+    challengeEmail = "";
+    authEmail = userEmail;
   }
 
-  $: if (!chatUnlocked && googleConfigured && googleClientId && !googleAuthenticated) {
-    void tick().then(renderGoogleButton);
+  $: if (hasMounted) {
+    messages;
+    prompt;
+    authEmail;
+    persistChatState();
   }
 
-  $: if (!isSending && !isGoogleAuthenticating && !isVoucherActivating) {
-    if (chatUnlocked) {
+  $: if (!isSending && !isSendingCode && !isVerifyingCode) {
+    if (chatUnlocked && Array.isArray(lastFailedRequestMessages)) {
+      setStatus("Last request did not complete. Retry when ready.", "error");
+      connectionPill = "Retry available";
+    } else if (chatUnlocked) {
       setStatus("Ready", "idle");
-      connectionPill = "All access gates passed";
-    } else if (!googleConfigured) {
-      setStatus("Google authentication not configured", "error");
-      connectionPill = "Google sign-in unavailable";
-    } else if (!googleAuthenticated) {
-      setStatus("Google sign-in required", googleErrorMessage ? "error" : "locked");
-      connectionPill = "Google sign-in required";
-    } else if (!voucherConfigured) {
-      setStatus("Voucher activation not configured", "error");
-      connectionPill = "Voucher activation unavailable";
-    } else if (!voucherActivated) {
-      setStatus("Voucher activation required", voucherErrorMessage ? "error" : "locked");
-      connectionPill = "Voucher activation required";
-    } else if (!verificationConfigured) {
-      setStatus("Verification not configured", "error");
-      connectionPill = "Access code unavailable";
-    } else if (!verified) {
-      setStatus("Verification required", verificationErrorMessage ? "error" : "locked");
-      connectionPill = "Verification required";
+      connectionPill = userRole === "admin" ? "Admin session active" : "Approved email session active";
+    } else if (!sessionSecretConfigured) {
+      setStatus("SESSION_TOKEN_SECRET not configured", "error");
+      connectionPill = "Email login unavailable";
+    } else if (!adminBootstrapConfigured) {
+      setStatus("EMAIL_AUTH_ADMINS not configured", "error");
+      connectionPill = "Admin bootstrap missing";
+    } else if (!storeConfigured) {
+      setStatus("Access storage not configured", "error");
+      connectionPill = "Email access storage unavailable";
+    } else if (!mailConfigured) {
+      setStatus("Email delivery not configured", "error");
+      connectionPill = "SMTP not configured";
+    } else if (challengeActive) {
+      setStatus(
+        "Enter the one-time code if it arrives in the approved inbox",
+        emailErrorMessage ? "error" : "locked"
+      );
+      connectionPill = "Waiting for email code";
+    } else {
+      setStatus("Approved email login required", emailErrorMessage ? "error" : "locked");
+      connectionPill = "Email login required";
     }
   }
 </script>
@@ -655,25 +729,117 @@
     <div class="eyebrow">Curiosity Institute</div>
     <h1>Chat with GPT-5.4</h1>
     <p>
-      A SvelteKit browser chat wired to a manager-led GPT pipeline. Each turn is steered by
-      a manager GPT, delegated to worker leads with their own subagents, then assembled into
-      one final answer with web search available when useful.
+      A SvelteKit browser chat wired to a manager-led GPT pipeline. Access is now gated by
+      approved-email sign-in with one-time codes, and admin users can authorize additional emails.
     </p>
     <div class="hero-meta">
       <span class="pill">{connectionPill}</span>
       <span class="pill subtle">
-        {#if chatUnlocked}
-          Google + voucher + verification active
-        {:else if !googleAuthenticated}
-          Step 1 of 3: Google sign-in
-        {:else if !voucherActivated}
-          Step 2 of 3: Voucher activation
+        {#if authenticated}
+          {userRole === "admin" ? "Admin email session" : "Approved email session"}
+        {:else if challengeActive}
+          Waiting for email code
         {:else}
-          Step 3 of 3: Verification
+          Approved email required
         {/if}
       </span>
     </div>
   </section>
+
+  {#if authenticated && isAdmin}
+    <section class="card admin-panel">
+      <div class="chat-topbar">
+        <div>
+          <div class="chat-title">Admin Access</div>
+          <div class="chat-status" data-mode={manageErrorMessage ? "error" : "idle"} aria-live="polite">
+            {manageErrorMessage || manageStatusMessage || "Manage who can request email login codes."}
+          </div>
+        </div>
+
+        <button class="ghost-button" type="button" on:click={loadAuthorizedUsers} disabled={isLoadingUsers}>
+          {isLoadingUsers ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      <div class="admin-grid">
+        <form class="gate-card admin-card" on:submit={saveAuthorizedUser}>
+          <div class="gate-card-header">
+            <div>
+              <div class="gate-kicker">Admin</div>
+              <h3 class="gate-card-title">Authorize an email</h3>
+            </div>
+
+            <span class="gate-badge" data-state="done">Admin</span>
+          </div>
+
+          <label class="sr-only" for="manage-email">Email</label>
+          <input
+            id="manage-email"
+            class="gate-input"
+            type="email"
+            bind:value={manageEmail}
+            placeholder="person@example.com"
+            autocomplete="email"
+            spellcheck="false"
+            disabled={isSavingUser}
+          />
+
+          <label class="sr-only" for="manage-role">Role</label>
+          <select id="manage-role" class="gate-select" bind:value={manageRole} disabled={isSavingUser}>
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+
+          <button class="gate-button" type="submit" disabled={!manageEmail.trim() || isSavingUser}>
+            {isSavingUser ? "Saving..." : "Save access"}
+          </button>
+        </form>
+
+        <div class="gate-card admin-card">
+          <div class="gate-card-header">
+            <div>
+              <div class="gate-kicker">Allowed Emails</div>
+              <h3 class="gate-card-title">Current access list</h3>
+            </div>
+
+            <span class="gate-badge" data-state={authorizedUsers.length > 0 ? "done" : "pending"}>
+              {authorizedUsers.length}
+            </span>
+          </div>
+
+          <div class="admin-user-list">
+            {#each authorizedUsers as authorizedUser (authorizedUser.email)}
+              <div class="admin-user">
+                <div>
+                  <div class="admin-user-email">{authorizedUser.email}</div>
+                  <div class="admin-meta">
+                    {authorizedUser.source === "bootstrap"
+                      ? "Bootstrap admin from env"
+                      : `Added by ${authorizedUser.addedBy || "admin"}`}
+                  </div>
+                </div>
+
+                <div class="admin-user-actions">
+                  <span class="admin-role-chip" data-role={authorizedUser.role}>{authorizedUser.role}</span>
+
+                  {#if authorizedUser.source !== "bootstrap"}
+                    <button
+                      class="ghost-button admin-remove"
+                      type="button"
+                      disabled={removingEmail === authorizedUser.email}
+                      on:click={() => removeAuthorizedUser(authorizedUser.email)}
+                    >
+                      {removingEmail === authorizedUser.email ? "Removing..." : "Remove"}
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </section>
+  {/if}
 
   <section class="chat card" aria-label="Chat">
     <div class="chat-topbar">
@@ -684,17 +850,29 @@
 
       <div class="toolbar-actions">
         {#if chatUnlocked}
+          {#if Array.isArray(lastFailedRequestMessages) && !isSending}
+            <button class="ghost-button" type="button" on:click={retryLastRequest}>
+              Retry
+            </button>
+          {/if}
+
+          {#if isSending}
+            <button class="ghost-button" type="button" on:click={stopRequest}>
+              Stop
+            </button>
+          {/if}
+
           <button class="ghost-button" type="button" on:click={clearConversation} disabled={isSending}>
             Clear
           </button>
         {/if}
 
-        {#if googleAuthenticated || voucherActivated || verified}
+        {#if authenticated || challengeActive}
           <form method="POST" action="/logout">
             <button
               class="ghost-button"
               type="submit"
-              disabled={isSending || isGoogleAuthenticating || isVoucherActivating}
+              disabled={isSending || isSendingCode || isVerifyingCode}
             >
               Lock
             </button>
@@ -737,223 +915,105 @@
     {:else}
       <div class="gate">
         <div class="gate-copy">
-          <div class="gate-kicker">Access Gate</div>
-          <h2 class="gate-heading">Google, voucher, then verification</h2>
+          <div class="gate-kicker">Secure Access</div>
+          <h2 class="gate-heading">Approved email sign-in</h2>
           <p class="gate-text">
-            This chat now unlocks only after a Google sign-in, an activated voucher, and the
-            existing server-side verification check. All three states are enforced by HttpOnly cookies.
+            Enter an approved email address. If that address has access, the server sends a one-time
+            code that can be used once to unlock the chat.
           </p>
         </div>
 
-        <div class="gate-steps" aria-label="Access steps">
-          <div class="gate-step" data-state={getStepState(!googleAuthenticated, googleConfigured, googleAuthenticated)}>
-            <span class="gate-step-index">1</span>
+        <section class="gate-card">
+          <div class="gate-card-header">
             <div>
-              <div class="gate-step-title">Google sign-in</div>
-              <div class="gate-step-text">
-                {#if !googleConfigured}
-                  Missing configuration
-                {:else if googleAuthenticated}
-                  Signed in as {googleEmail}
-                {:else}
-                  Required before anything else
-                {/if}
-              </div>
+              <div class="gate-kicker">Step 1</div>
+              <h3 class="gate-card-title">Request a login code</h3>
             </div>
+
+            <span class="gate-badge" data-state={authenticated ? "done" : challengeActive ? "active" : "pending"}>
+              {authenticated ? "Connected" : challengeActive ? "Check inbox" : "Required"}
+            </span>
           </div>
 
-          <div
-            class="gate-step"
-            data-state={getStepState(
-              googleAuthenticated && !voucherActivated,
-              voucherConfigured,
-              voucherActivated
-            )}
-          >
-            <span class="gate-step-index">2</span>
-            <div>
-              <div class="gate-step-title">Voucher activation</div>
-              <div class="gate-step-text">
-                {#if !voucherConfigured}
-                  Missing configuration
-                {:else if voucherActivated}
-                  Activated for this Google session
-                {:else}
-                  Required after Google sign-in
-                {/if}
-              </div>
-            </div>
-          </div>
-
-          <div
-            class="gate-step"
-            data-state={getStepState(
-              readyForVerification && !verified,
-              verificationConfigured,
-              verified
-            )}
-          >
-            <span class="gate-step-index">3</span>
-            <div>
-              <div class="gate-step-title">Verification</div>
-              <div class="gate-step-text">
-                {#if !verificationConfigured}
-                  Missing configuration
-                {:else if verified}
-                  Verified session active
-                {:else}
-                  Required after voucher activation
-                {/if}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="gate-grid">
-          <section class="gate-card">
-            <div class="gate-card-header">
+          {#if authenticated}
+            <div class="gate-identity">
               <div>
-                <div class="gate-kicker">Step 1</div>
-                <h3 class="gate-card-title">Sign in with Google</h3>
+                <div class="gate-identity-name">{userEmail}</div>
+                <div class="gate-identity-email">{userRole}</div>
               </div>
-
-              <span class="gate-badge" data-state={googleAuthenticated ? "done" : "pending"}>
-                {googleAuthenticated ? "Connected" : "Required"}
-              </span>
             </div>
-
-            {#if googleAuthenticated}
-              <div class="gate-identity">
-                {#if googlePicture}
-                  <img class="gate-avatar" src={googlePicture} alt="" />
-                {/if}
-                <div>
-                  <div class="gate-identity-name">{googleName || googleEmail}</div>
-                  <div class="gate-identity-email">{googleEmail}</div>
-                </div>
-              </div>
-            {:else if googleConfigured}
-              <div class="gate-google-slot" bind:this={googleButtonEl}></div>
-            {:else}
-              <div class="gate-error">
-                PUBLIC_GOOGLE_CLIENT_ID is not configured, so Google sign-in cannot start.
-              </div>
-            {/if}
-
-            {#if googleErrorMessage}
-              <div class="gate-error">{googleErrorMessage}</div>
-            {/if}
-          </section>
-
-          <section class="gate-card">
-            <div class="gate-card-header">
-              <div>
-                <div class="gate-kicker">Step 2</div>
-                <h3 class="gate-card-title">Activate a voucher</h3>
-              </div>
-
-              <span class="gate-badge" data-state={voucherActivated ? "done" : "pending"}>
-                {voucherActivated ? "Activated" : "Required"}
-              </span>
-            </div>
-
-            {#if voucherActivated}
-              <div class="gate-note">
-                Voucher activated for this Google session.
-                {#if voucherId}
-                  Session token: <code>{voucherId.slice(0, 12)}</code>
-                {/if}
-              </div>
-            {/if}
-
-            <form class="gate-form" on:submit|preventDefault={activateVoucher}>
-              <label class="sr-only" for="voucher-code">Voucher code</label>
+          {:else}
+            <form class="gate-form" on:submit={requestLoginCode}>
+              <label class="sr-only" for="auth-email">Approved email</label>
               <input
-                id="voucher-code"
+                id="auth-email"
                 class="gate-input"
-                type="password"
-                name="voucherCode"
-                bind:this={voucherInputEl}
-                bind:value={voucherCode}
-                placeholder="Enter voucher code"
-                autocomplete="one-time-code"
+                type="email"
+                bind:this={emailInputEl}
+                bind:value={authEmail}
+                placeholder="you@example.com"
+                autocomplete="email"
                 spellcheck="false"
-                disabled={!googleAuthenticated || !voucherConfigured || isVoucherActivating}
+                disabled={isSendingCode || !sessionSecretConfigured || !mailConfigured || !storeConfigured || !adminBootstrapConfigured}
               />
               <button
                 class="gate-button"
                 type="submit"
-                disabled={!googleAuthenticated || !voucherConfigured || !voucherCode.trim() || isVoucherActivating}
+                disabled={!authEmail.trim() || isSendingCode || !sessionSecretConfigured || !mailConfigured || !storeConfigured || !adminBootstrapConfigured}
               >
-                {isVoucherActivating ? "Activating..." : "Activate"}
+                {isSendingCode ? "Sending..." : "Send code"}
               </button>
             </form>
 
-            {#if !googleAuthenticated}
-              <div class="gate-note">Sign in with Google before activating a voucher.</div>
-            {:else if !voucherConfigured}
-              <div class="gate-error">
-                CHAT_VOUCHERS is not configured on the server yet, so voucher activation cannot succeed.
-              </div>
-            {/if}
-
-            {#if voucherErrorMessage}
-              <div class="gate-error">{voucherErrorMessage}</div>
-            {/if}
-          </section>
-
-          <section class="gate-card">
-            <div class="gate-card-header">
-              <div>
-                <div class="gate-kicker">Step 3</div>
-                <h3 class="gate-card-title">Pass verification</h3>
-              </div>
-
-              <span class="gate-badge" data-state={verified ? "done" : "pending"}>
-                {verified ? "Verified" : "Required"}
-              </span>
-            </div>
-
-            {#if verificationConfigured}
-              <form class="gate-form" on:submit={verifyAccess}>
-                <label class="sr-only" for="verification-code">Access code</label>
+            {#if challengeActive}
+              <form class="gate-form" on:submit={verifyLoginCode}>
+                <label class="sr-only" for="login-code">Login code</label>
                 <input
-                  id="verification-code"
+                  id="login-code"
                   class="gate-input"
-                  type="password"
-                  name="accessCode"
-                  bind:this={verificationInputEl}
-                  bind:value={accessCode}
-                  placeholder="Enter access code"
-                  autocomplete="current-password"
+                  type="text"
+                  bind:this={codeInputEl}
+                  bind:value={loginCode}
+                  placeholder="Enter one-time code"
+                  autocomplete="one-time-code"
                   spellcheck="false"
-                  disabled={!readyForVerification || isVerifying}
+                  disabled={isVerifyingCode}
                 />
-                <button
-                  class="gate-button"
-                  type="submit"
-                  disabled={!readyForVerification || !accessCode.trim() || isVerifying}
-                >
-                  {isVerifying ? "Verifying..." : "Verify"}
+                <button class="gate-button" type="submit" disabled={!loginCode.trim() || isVerifyingCode}>
+                  {isVerifyingCode ? "Verifying..." : "Verify code"}
                 </button>
               </form>
-            {:else}
-              <div class="gate-error">
-                CHAT_ACCESS_CODE is not configured on the server yet, so verification cannot succeed.
-              </div>
             {/if}
+          {/if}
 
-            {#if !readyForVerification && verificationConfigured}
-              <div class="gate-note">
-                Finish Google sign-in and voucher activation before submitting the access code.
-              </div>
-            {/if}
+          {#if challengeActive && challengeEmail}
+            <div class="gate-note">
+              If {challengeEmail} has access, use the one-time code from that inbox.
+            </div>
+          {/if}
 
-            {#if verificationErrorMessage}
-              <div class="gate-error">{verificationErrorMessage}</div>
-            {/if}
-          </section>
-        </div>
+          {#if emailStatusMessage}
+            <div class="gate-note">{emailStatusMessage}</div>
+          {/if}
+
+          {#if !sessionSecretConfigured}
+            <div class="gate-error">SESSION_TOKEN_SECRET is not configured.</div>
+          {:else if !adminBootstrapConfigured}
+            <div class="gate-error">EMAIL_AUTH_ADMINS is not configured.</div>
+          {:else if !storeConfigured}
+            <div class="gate-error">
+              Durable email access storage is not configured. Set `BLOB_READ_WRITE_TOKEN` in production.
+            </div>
+          {:else if !mailConfigured}
+            <div class="gate-error">
+              Email delivery is not configured. Set `SMTP_URL` and `SMTP_FROM`, or SMTP host/user/pass settings.
+            </div>
+          {/if}
+
+          {#if emailErrorMessage}
+            <div class="gate-error">{emailErrorMessage}</div>
+          {/if}
+        </section>
       </div>
     {/if}
   </section>
