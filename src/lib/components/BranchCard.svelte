@@ -31,7 +31,7 @@
 
   {#if branch?.modifier}
     <div class="branch-subagents">
-      Modifier: {branch.modifier.attemptsUsed}/{branch.modifier.adaptationLimit} attempts
+      Modifier: {branch.modifier.attemptsUsed}/{branch.modifier.budgetedLimit || branch.modifier.adaptationLimit} attempts
       {#if branch.modifier.stoppedReason}
         - {branch.modifier.stoppedReason}
       {/if}

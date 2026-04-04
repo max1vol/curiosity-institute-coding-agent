@@ -2,12 +2,14 @@ import { env as privateEnv } from "$env/dynamic/private";
 import { env as publicEnv } from "$env/dynamic/public";
 import { redirect } from "@sveltejs/kit";
 import {
+  clearVerificationCookie,
   createAccessState,
-  isSubmittedAccessCodeValid,
-  setVerificationCookie
+  findVoucherRecord,
+  setVoucherCookie
 } from "$lib/server/access";
 
 export async function POST({ request, cookies, url }) {
+  const secure = url.protocol === "https:";
   const accessState = createAccessState(cookies, {
     accessCode: privateEnv.CHAT_ACCESS_CODE,
     sessionSecret: privateEnv.SESSION_TOKEN_SECRET,
@@ -17,32 +19,32 @@ export async function POST({ request, cookies, url }) {
   });
 
   if (!accessState.googleConfigured) {
-    throw redirect(303, "/?verificationError=google-missing");
+    throw redirect(303, "/?voucherError=google-missing");
   }
 
   if (!accessState.googleAuthenticated) {
-    throw redirect(303, "/?verificationError=google-required");
+    throw redirect(303, "/?voucherError=google-required");
   }
 
   if (!accessState.voucherConfigured) {
-    throw redirect(303, "/?verificationError=voucher-missing");
-  }
-
-  if (!accessState.voucherActivated) {
-    throw redirect(303, "/?verificationError=voucher-required");
-  }
-
-  if (!accessState.verificationConfigured) {
-    throw redirect(303, "/?verificationError=missing");
+    throw redirect(303, "/?voucherError=missing");
   }
 
   const formData = await request.formData();
-  const submittedAccessCode = formData.get("accessCode");
+  const voucherRecord = findVoucherRecord(formData.get("voucherCode"), privateEnv.CHAT_VOUCHERS);
 
-  if (!isSubmittedAccessCodeValid(submittedAccessCode, privateEnv.CHAT_ACCESS_CODE)) {
-    throw redirect(303, "/?verificationError=invalid");
+  if (!voucherRecord) {
+    throw redirect(303, "/?voucherError=invalid");
   }
 
-  setVerificationCookie(cookies, privateEnv.CHAT_ACCESS_CODE, url.protocol === "https:");
+  setVoucherCookie(
+    cookies,
+    privateEnv.SESSION_TOKEN_SECRET,
+    privateEnv.CHAT_ACCESS_CODE,
+    secure,
+    accessState.googleSession,
+    voucherRecord
+  );
+  clearVerificationCookie(cookies, secure);
   throw redirect(303, "/");
 }

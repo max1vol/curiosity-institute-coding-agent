@@ -2,10 +2,11 @@ import { json } from "@sveltejs/kit";
 import { env as privateEnv } from "$env/dynamic/private";
 import { env as publicEnv } from "$env/dynamic/public";
 import {
+  clearVerificationCookie,
   createAccessState,
   createNoStoreHeaders,
-  isSubmittedAccessCodeValid,
-  setVerificationCookie
+  findVoucherRecord,
+  setVoucherCookie
 } from "$lib/server/access";
 
 export const config = {
@@ -27,6 +28,7 @@ function createGate(accessState) {
 
 export async function POST({ request, cookies, url }) {
   const headers = createNoStoreHeaders();
+  const secure = url.protocol === "https:";
   const accessState = createAccessState(cookies, {
     accessCode: privateEnv.CHAT_ACCESS_CODE,
     sessionSecret: privateEnv.SESSION_TOKEN_SECRET,
@@ -47,34 +49,14 @@ export async function POST({ request, cookies, url }) {
 
   if (!accessState.googleAuthenticated) {
     return json(
-      { error: "Google sign-in required before verification.", gate: createGate(accessState) },
+      { error: "Google sign-in required before voucher activation.", gate: createGate(accessState) },
       { status: 401, headers }
     );
   }
 
   if (!accessState.voucherConfigured) {
     return json(
-      {
-        error: "Voucher activation is not configured. Set CHAT_VOUCHERS first.",
-        gate: createGate(accessState)
-      },
-      { status: 503, headers }
-    );
-  }
-
-  if (!accessState.voucherActivated) {
-    return json(
-      { error: "Activate a voucher before verification.", gate: createGate(accessState) },
-      { status: 401, headers }
-    );
-  }
-
-  if (!accessState.verificationConfigured) {
-    return json(
-      {
-        error: "CHAT_ACCESS_CODE is not set. Configure it before using verification.",
-        gate: createGate(accessState)
-      },
+      { error: "Voucher activation is not configured. Set CHAT_VOUCHERS first.", gate: createGate(accessState) },
       { status: 503, headers }
     );
   }
@@ -87,13 +69,29 @@ export async function POST({ request, cookies, url }) {
     return json({ error: "Invalid JSON request body." }, { status: 400, headers });
   }
 
-  if (!isSubmittedAccessCodeValid(parsed?.accessCode, privateEnv.CHAT_ACCESS_CODE)) {
-    return json(
-      { error: "Invalid access code.", gate: createGate(accessState) },
-      { status: 401, headers }
-    );
+  const voucherRecord = findVoucherRecord(parsed?.voucherCode, privateEnv.CHAT_VOUCHERS);
+
+  if (!voucherRecord) {
+    return json({ error: "Invalid voucher code.", gate: createGate(accessState) }, { status: 401, headers });
   }
 
-  setVerificationCookie(cookies, privateEnv.CHAT_ACCESS_CODE, url.protocol === "https:");
-  return json({ ok: true }, { headers });
+  setVoucherCookie(
+    cookies,
+    privateEnv.SESSION_TOKEN_SECRET,
+    privateEnv.CHAT_ACCESS_CODE,
+    secure,
+    accessState.googleSession,
+    voucherRecord
+  );
+  clearVerificationCookie(cookies, secure);
+
+  return json(
+    {
+      ok: true,
+      voucher: {
+        id: voucherRecord.id
+      }
+    },
+    { headers }
+  );
 }

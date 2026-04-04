@@ -22,6 +22,7 @@
     "vite": "^6.4.1"
   },
   "dependencies": {
-    "@ljoukov/llm": "^7.0.0"
+    "@ljoukov/llm": "^7.0.0",
+    "google-auth-library": "^10.6.2"
   }
 }

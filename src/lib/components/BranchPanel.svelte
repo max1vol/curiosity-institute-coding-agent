@@ -24,7 +24,7 @@
   }
 </script>
 
-<details class="branch-panel" open>
+<details class="branch-panel">
   <summary class="branch-panel-summary">
     <span class="branch-panel-title">Parallel branches ({branches.length})</span>
     <span class="branch-panel-assembly">{formatAssemblyMeta(assembly)}</span>

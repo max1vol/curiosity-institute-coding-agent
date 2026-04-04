@@ -1,4 +1,6 @@
 .env
+.[c]odex
+.[c]odex/
 node_modules/
 .vercel/
 .vercel

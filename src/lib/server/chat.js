@@ -74,10 +74,16 @@ const MAX_MESSAGES = 24;
 const MAX_CONTEXT_MESSAGES = 6;
 const MAX_CONTEXT_CHARS = 320;
 const OPENAI_TIMEOUT_MS = 45000;
-const INTERNAL_STAGE_TIMEOUT_MS = 20000;
+const MANAGER_STAGE_TIMEOUT_MS = 12000;
+const MODIFIER_STAGE_TIMEOUT_MS = 8000;
+const WORKER_STAGE_TIMEOUT_MS = 15000;
+const GRADER_STAGE_TIMEOUT_MS = 7000;
 const BRANCH_MODIFIER_LIMIT = 8;
-const TARGET_USABLE_BRANCH_CANDIDATES = 3;
-const ORCHESTRATION_STRATEGY = "manager-modifier-managed-grader-v4";
+const MAX_PROBE_PROMPT_CHARS = 72;
+const MAX_FAST_PROMPT_CHARS = 220;
+const MAX_FAST_CONTEXT_CHARS = 800;
+const MIN_STRONG_BRANCH_OUTPUT_CHARS = 120;
+const ORCHESTRATION_STRATEGY = "manager-modifier-managed-grader-v5";
 const WEB_SEARCH_TOOLS = [{ type: "web-search", mode: "live" }];
 const NO_TOOLS = [];
 const BASE_ASSISTANT_INSTRUCTIONS =
@@ -157,6 +163,144 @@ function formatCompactConversationContext(messages) {
     .slice(-MAX_CONTEXT_MESSAGES)
     .map((message, index) => `Message ${index + 1} [${message.role}]: ${truncateText(message.content)}`)
     .join("\n");
+}
+
+function createInternalStageMessages(messages, sections = []) {
+  return [
+    {
+      role: "user",
+      content: [
+        `Conversation context:\n${formatCompactConversationContext(messages)}`,
+        ...sections.filter((section) => sanitizeText(section).length > 0)
+      ].join("\n\n")
+    }
+  ];
+}
+
+function getLastUserMessage(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (message?.role === "user") {
+      return message;
+    }
+  }
+
+  return messages.at(-1) || null;
+}
+
+function sumMessageChars(messages) {
+  return messages.reduce((total, message) => total + sanitizeText(message?.content).length, 0);
+}
+
+function createOrchestrationProfile(messages) {
+  const lastUserContent = sanitizeText(getLastUserMessage(messages)?.content);
+  const totalChars = sumMessageChars(messages);
+  const hasCodeBlock = /```/.test(lastUserContent);
+  const hasMultiline = /\n/.test(lastUserContent);
+  const looksResearchHeavy =
+    /\b(compare|trade-?off|architecture|design|analy[sz]e|investigate|research|benchmark|debug|refactor|migrate)\b/i.test(
+      lastUserContent
+    );
+  const expectsLiteral =
+    /\b(exact(ly)?|verbatim|literal|string|token|reply with|respond with)\b/i.test(lastUserContent);
+  const isProbe =
+    messages.length <= 2 &&
+    lastUserContent.length > 0 &&
+    lastUserContent.length <= MAX_PROBE_PROMPT_CHARS &&
+    !hasCodeBlock &&
+    !hasMultiline;
+  const isFast =
+    !isProbe &&
+    !hasCodeBlock &&
+    !looksResearchHeavy &&
+    lastUserContent.length <= MAX_FAST_PROMPT_CHARS &&
+    totalChars <= MAX_FAST_CONTEXT_CHARS &&
+    messages.length <= 4;
+  const isDeep =
+    hasCodeBlock ||
+    looksResearchHeavy ||
+    lastUserContent.length >= 900 ||
+    totalChars >= 2200 ||
+    messages.length >= 8 ||
+    (hasMultiline && lastUserContent.length >= 360);
+
+  if (isProbe) {
+    return {
+      id: "probe",
+      expectsLiteral,
+      managerMode: "fallback",
+      branchAttempts: 1,
+      candidateTargets: {
+        mapper: 1,
+        solver: 1,
+        skeptic: 1
+      },
+      goodEnoughChars: expectsLiteral ? 1 : 48
+    };
+  }
+
+  if (isFast) {
+    return {
+      id: "fast",
+      expectsLiteral,
+      managerMode: "fallback",
+      branchAttempts: 1,
+      candidateTargets: {
+        mapper: 1,
+        solver: 1,
+        skeptic: 1
+      },
+      goodEnoughChars: expectsLiteral ? 1 : MIN_STRONG_BRANCH_OUTPUT_CHARS
+    };
+  }
+
+  if (isDeep) {
+    return {
+      id: "deep",
+      expectsLiteral,
+      managerMode: "model",
+      branchAttempts: 3,
+      candidateTargets: {
+        mapper: 2,
+        solver: 2,
+        skeptic: 1
+      },
+      goodEnoughChars: expectsLiteral ? 1 : 280
+    };
+  }
+
+  return {
+    id: "standard",
+    expectsLiteral,
+    managerMode: "model",
+    branchAttempts: 2,
+    candidateTargets: {
+      mapper: 1,
+      solver: 2,
+      skeptic: 1
+    },
+    goodEnoughChars: expectsLiteral ? 1 : 220
+  };
+}
+
+function getBranchBudget(profile, worker) {
+  const targetUsableCandidates = Math.max(
+    1,
+    Number(profile?.candidateTargets?.[worker.key]) || 1
+  );
+
+  return {
+    maxAttempts: Math.min(
+      BRANCH_MODIFIER_LIMIT,
+      Math.max(targetUsableCandidates, Number(profile?.branchAttempts) || 1)
+    ),
+    targetUsableCandidates,
+    goodEnoughChars: Math.max(
+      profile?.expectsLiteral ? 1 : MIN_STRONG_BRANCH_OUTPUT_CHARS,
+      Number(profile?.goodEnoughChars) || MIN_STRONG_BRANCH_OUTPUT_CHARS
+    )
+  };
 }
 
 async function callOpenAiTextWithProfile(
@@ -331,15 +475,30 @@ function createManagerInstructions() {
   ].join("\n");
 }
 
-async function requestManagerPlan(openAiApiKey, messages) {
+function shouldUseWebSearch(messages) {
+  const lastUserContent = sanitizeText(getLastUserMessage(messages)?.content);
+
+  return /\b(latest|recent|current|today|tonight|now|news|price|pricing|release|version|weather|schedule|score|look up|search|browse)\b/i.test(
+    lastUserContent
+  );
+}
+
+async function requestManagerPlan(openAiApiKey, messages, profile) {
+  if (profile?.managerMode !== "model") {
+    const fallback = createDefaultManagerPlan();
+    fallback.brief = `${fallback.brief} Fast-path manager planning was generated locally to reduce latency.`;
+    return fallback;
+  }
+
+  const managerMessages = createInternalStageMessages(messages);
   const result = await callOpenAiTextWithProfile(
     openAiApiKey,
     MANAGER_MODEL,
     MANAGER_REASONING_EFFORT,
     createManagerInstructions(),
-    messages,
+    managerMessages,
     NO_TOOLS,
-    INTERNAL_STAGE_TIMEOUT_MS
+    MANAGER_STAGE_TIMEOUT_MS
   );
 
   if (!result.ok) {
@@ -440,7 +599,7 @@ async function requestBranchModifier(openAiApiKey, messages, worker, assignment,
     createBranchModifierInstructions(worker, assignment, managerPlan, candidates, attempt),
     modifierInput,
     NO_TOOLS,
-    INTERNAL_STAGE_TIMEOUT_MS
+    MODIFIER_STAGE_TIMEOUT_MS
   );
 
   if (!result.ok) {
@@ -553,14 +712,15 @@ async function requestManagedBranchCandidate(
   modifierPlan,
   attempt
 ) {
+  const workerMessages = createInternalStageMessages(messages);
   const result = await callOpenAiTextWithProfile(
     openAiApiKey,
     WORKER_MODEL,
     WORKER_REASONING_EFFORT,
     createManagedBranchInstructions(worker, assignment, managerPlan, modifierPlan, attempt),
-    messages,
+    workerMessages,
     NO_TOOLS,
-    INTERNAL_STAGE_TIMEOUT_MS
+    WORKER_STAGE_TIMEOUT_MS
   );
 
   if (!result.ok) {
@@ -615,12 +775,27 @@ function hasRepeatedBranchOutput(candidates, output) {
   return Boolean(normalized) && candidates.some((candidate) => sanitizeText(candidate.output) === normalized);
 }
 
-async function runManagedBranchCandidates(openAiApiKey, messages, worker, assignment, managerPlan) {
+function isStrongBranchCandidate(candidate, branchBudget) {
+  if (candidate?.status !== "completed") {
+    return false;
+  }
+
+  const outputLength = sanitizeText(candidate.output).length;
+  const completedSubagents = countCompletedSubagents(candidate.subagents);
+
+  return (
+    Boolean(candidate.done) ||
+    (completedSubagents === WORKER_SUBAGENTS.length && outputLength >= branchBudget.goodEnoughChars)
+  );
+}
+
+async function runManagedBranchCandidates(openAiApiKey, messages, worker, assignment, managerPlan, profile) {
+  const branchBudget = getBranchBudget(profile, worker);
   const candidates = [];
   const modifierAttempts = [];
   let stoppedReason = "Reached the branch modifier adaptation limit.";
 
-  for (let attempt = 1; attempt <= BRANCH_MODIFIER_LIMIT; attempt += 1) {
+  for (let attempt = 1; attempt <= branchBudget.maxAttempts; attempt += 1) {
     const modifierPlan = await requestBranchModifier(
       openAiApiKey,
       messages,
@@ -667,8 +842,18 @@ async function runManagedBranchCandidates(openAiApiKey, messages, worker, assign
       break;
     }
 
-    if (usableCandidates.length >= TARGET_USABLE_BRANCH_CANDIDATES) {
+    if (usableCandidates.length >= branchBudget.targetUsableCandidates) {
       stoppedReason = "Generated enough branch candidates for pairwise grading.";
+      break;
+    }
+
+    if (isStrongBranchCandidate(candidate, branchBudget)) {
+      stoppedReason = "First strong branch candidate was good enough.";
+      break;
+    }
+
+    if (profile?.id === "probe" || profile?.id === "fast") {
+      stoppedReason = "Fast-path orchestration keeps one candidate per branch.";
       break;
     }
 
@@ -688,6 +873,7 @@ async function runManagedBranchCandidates(openAiApiKey, messages, worker, assign
   }
 
   return {
+    branchBudget,
     candidates,
     modifierAttempts,
     stoppedReason
@@ -781,7 +967,7 @@ async function requestBranchGrade(
     createBranchGraderInstructions(worker, assignment, managerPlan),
     graderMessages,
     NO_TOOLS,
-    INTERNAL_STAGE_TIMEOUT_MS
+    GRADER_STAGE_TIMEOUT_MS
   );
 
   if (!result.ok) {
@@ -887,13 +1073,14 @@ function summarizeModifierAttempts(modifierAttempts) {
   }));
 }
 
-async function requestBranchReply(openAiApiKey, messages, worker, assignment, managerPlan) {
-  const { candidates, modifierAttempts, stoppedReason } = await runManagedBranchCandidates(
+async function requestBranchReply(openAiApiKey, messages, worker, assignment, managerPlan, profile) {
+  const { branchBudget, candidates, modifierAttempts, stoppedReason } = await runManagedBranchCandidates(
     openAiApiKey,
     messages,
     worker,
     assignment,
-    managerPlan
+    managerPlan,
+    profile
   );
 
   const usableCandidates = candidates.filter(
@@ -905,6 +1092,7 @@ async function requestBranchReply(openAiApiKey, messages, worker, assignment, ma
     model: BRANCH_MODIFIER_MODEL,
     reasoningEffort: BRANCH_MODIFIER_REASONING_EFFORT,
     adaptationLimit: BRANCH_MODIFIER_LIMIT,
+    budgetedLimit: branchBudget.maxAttempts,
     attemptsUsed: modifierAttempts.length,
     stoppedReason,
     attempts: summarizeModifierAttempts(modifierAttempts)
@@ -990,6 +1178,75 @@ function createAssemblyInstructions(managerPlan, branches) {
   ].join("\n\n");
 }
 
+function createClientManagerView(managerPlan, profile) {
+  return {
+    name: managerPlan.name,
+    model: managerPlan.model,
+    reasoningEffort: managerPlan.reasoningEffort,
+    strategy: managerPlan.strategy,
+    brief: managerPlan.brief,
+    profile: profile.id
+  };
+}
+
+function createClientBranchView(branch) {
+  return {
+    key: branch.key,
+    name: branch.name,
+    role: branch.role,
+    task: branch.task,
+    objective: branch.objective,
+    priority: branch.priority,
+    watchouts: branch.watchouts,
+    model: branch.model,
+    reasoningEffort: branch.reasoningEffort,
+    status: branch.status,
+    output: truncateText(branch.output, 1200),
+    error: branch.error,
+    subagents: (Array.isArray(branch.subagents) ? branch.subagents : []).map((subagent) => ({
+      key: subagent.key,
+      name: subagent.name,
+      role: subagent.role,
+      status: subagent.status
+    })),
+    modifier: branch.modifier
+      ? {
+          name: branch.modifier.name,
+          model: branch.modifier.model,
+          reasoningEffort: branch.modifier.reasoningEffort,
+          adaptationLimit: branch.modifier.adaptationLimit,
+          budgetedLimit: branch.modifier.budgetedLimit,
+          attemptsUsed: branch.modifier.attemptsUsed,
+          stoppedReason: branch.modifier.stoppedReason
+        }
+      : null,
+    grading: branch.grading
+      ? {
+          name: branch.grading.name,
+          model: branch.grading.model,
+          reasoningEffort: branch.grading.reasoningEffort,
+          winnerAttempt: branch.grading.winnerAttempt,
+          rounds: (Array.isArray(branch.grading.rounds) ? branch.grading.rounds : []).map((round) => ({
+            round: round.round,
+            matchCount: Array.isArray(round.matches) ? round.matches.length : 0
+          }))
+        }
+      : null
+  };
+}
+
+function createAssemblyState(profile, tools, extra = {}) {
+  return {
+    name: "Assembly GPT",
+    model: MODEL,
+    reasoningEffort: REASONING_EFFORT,
+    strategy: ORCHESTRATION_STRATEGY,
+    profile: profile.id,
+    webSearch: Array.isArray(tools) && tools.length > 0,
+    ...extra
+  };
+}
+
 export async function requestReply(openAiApiKey, messages) {
   if (!openAiApiKey) {
     return {
@@ -1001,11 +1258,13 @@ export async function requestReply(openAiApiKey, messages) {
     };
   }
 
-  const managerPlan = await requestManagerPlan(openAiApiKey, messages);
+  const profile = createOrchestrationProfile(messages);
+  const assemblyTools = shouldUseWebSearch(messages) ? WEB_SEARCH_TOOLS : NO_TOOLS;
+  const managerPlan = await requestManagerPlan(openAiApiKey, messages, profile);
 
   const branchSettled = await Promise.allSettled(
     managerPlan.workers.map((assignment, index) =>
-      requestBranchReply(openAiApiKey, messages, BRANCH_WORKERS[index], assignment, managerPlan)
+      requestBranchReply(openAiApiKey, messages, BRANCH_WORKERS[index], assignment, managerPlan, profile)
     )
   );
 
@@ -1027,6 +1286,7 @@ export async function requestReply(openAiApiKey, messages) {
         model: BRANCH_MODIFIER_MODEL,
         reasoningEffort: BRANCH_MODIFIER_REASONING_EFFORT,
         adaptationLimit: BRANCH_MODIFIER_LIMIT,
+        budgetedLimit: 0,
         attemptsUsed: 0,
         stoppedReason: "Branch execution failed before any adapted candidates were produced.",
         attempts: []
@@ -1046,9 +1306,7 @@ export async function requestReply(openAiApiKey, messages) {
   );
 
   const assembly = {
-    model: MODEL,
-    reasoningEffort: REASONING_EFFORT,
-    strategy: ORCHESTRATION_STRATEGY
+    ...createAssemblyState(profile, assemblyTools)
   };
 
   if (usableBranches.length === 0) {
@@ -1057,9 +1315,13 @@ export async function requestReply(openAiApiKey, messages) {
       status: 502,
       payload: {
         error: "All manager-directed worker branches failed.",
-        manager: managerPlan,
-        branches,
-        assembly
+        manager: createClientManagerView(managerPlan, profile),
+        branches: branches.map(createClientBranchView),
+        assembly: {
+          ...assembly,
+          skipped: true,
+          reason: "No successful branch outputs were available for assembly."
+        }
       }
     };
   }
@@ -1067,7 +1329,8 @@ export async function requestReply(openAiApiKey, messages) {
   const assemblyResult = await callOpenAiText(
     openAiApiKey,
     createAssemblyInstructions(managerPlan, usableBranches),
-    messages
+    messages,
+    assemblyTools
   );
 
   if (!assemblyResult.ok) {
@@ -1081,9 +1344,13 @@ export async function requestReply(openAiApiKey, messages) {
           reply: fallback,
           model: MODEL,
           reasoningEffort: REASONING_EFFORT,
-          manager: managerPlan,
-          branches,
-          assembly
+          manager: createClientManagerView(managerPlan, profile),
+          branches: branches.map(createClientBranchView),
+          assembly: {
+            ...assembly,
+            degraded: true,
+            reason: assemblyResult.payload.error || "Assembly failed, so the strongest branch was returned directly."
+          }
         }
       };
     }
@@ -1093,9 +1360,12 @@ export async function requestReply(openAiApiKey, messages) {
       status: assemblyResult.status,
       payload: {
         error: assemblyResult.payload.error,
-        manager: managerPlan,
-        branches,
-        assembly
+        manager: createClientManagerView(managerPlan, profile),
+        branches: branches.map(createClientBranchView),
+        assembly: {
+          ...assembly,
+          error: assemblyResult.payload.error || "Assembly failed."
+        }
       }
     };
   }
@@ -1107,9 +1377,12 @@ export async function requestReply(openAiApiKey, messages) {
       reply: assemblyResult.payload.reply,
       model: MODEL,
       reasoningEffort: REASONING_EFFORT,
-      manager: managerPlan,
-      branches,
-      assembly
+      manager: createClientManagerView(managerPlan, profile),
+      branches: branches.map(createClientBranchView),
+      assembly: {
+        ...assembly,
+        branchCount: usableBranches.length
+      }
     }
   };
 }
