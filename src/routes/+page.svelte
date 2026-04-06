@@ -954,7 +954,7 @@
                 placeholder="you@example.com"
                 autocomplete="email"
                 spellcheck="false"
-                disabled={isSendingCode || !sessionSecretConfigured || !mailConfigured || !storeConfigured || !adminBootstrapConfigured}
+                disabled={isSendingCode}
               />
               <button
                 class="gate-button"
